@@ -1,0 +1,15 @@
+adbutils
+asyncio
+httpx
+logzero
+pillow
+PyYAML
+requests
+tidevice==0.12.10
+tornado
+uiautomator2
+bitstring
+h26x_extractor
+pyOpenSSL
+pyasn1
+netifaces

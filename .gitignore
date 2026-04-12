@@ -1,0 +1,73 @@
+# OS
+.DS_Store
+
+# AI Tools
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.iws
+*.iml
+*.ipr
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+### Java / Maven ###
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+HELP.md
+
+### Spring ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+application-local.yml
+
+### NetBeans ###
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### Node.js / Frontend ###
+node_modules/
+tms-web/dist/
+
+### Environment files ###
+.env.local
+.env.*.local
+
+### Log files ###
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+### Python ###
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+venv/
+.venv/
+
+### Agent local config ###
+tms-agent/settings.yml
+
+### Binary / third-party tools ###
+tms-agent/device/android/tools/static/scrcpy-server
+tms-agent/device/android/tools/static/scrcpy-server-*.zip
