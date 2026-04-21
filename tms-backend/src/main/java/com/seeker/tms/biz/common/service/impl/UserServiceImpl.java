@@ -5,7 +5,6 @@ import com.seeker.tms.biz.common.entities.UserDTO;
 import com.seeker.tms.biz.common.entities.UserPO;
 import com.seeker.tms.biz.common.mapper.UserMapper;
 import com.seeker.tms.biz.common.service.UserService;
-import jdk.nashorn.internal.runtime.regexp.joni.exception.ValueException;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -15,7 +14,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, UserPO> implements 
     public UserPO signup(UserDTO userDTO) {
         UserPO userPO = this.lambdaQuery().eq(UserPO::getUsername, userDTO.getUsername()).one();
         if (userPO != null) {
-            throw new ValueException("用户名已存在: " + userDTO.getUsername());
+            throw new IllegalArgumentException("用户名已存在: " + userDTO.getUsername());
         }
 
         UserPO userPO1 = new UserPO();

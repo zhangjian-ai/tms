@@ -18,6 +18,7 @@
 
 ### Java / Maven ###
 target/
+${project.build.directory}/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
