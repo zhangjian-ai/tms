@@ -2,6 +2,16 @@ const { defineConfig } = require('@vue/cli-service')
 
 module.exports = defineConfig({
   transpileDependencies: true,
+  devServer: {
+    client: {
+      overlay: {
+        runtimeErrors: (error) => {
+          if (error.message && error.message.includes('ResizeObserver loop')) return false
+          return true
+        }
+      }
+    }
+  },
   configureWebpack: {
     resolve: {
       fallback: {

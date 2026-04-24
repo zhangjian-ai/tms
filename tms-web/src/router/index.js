@@ -100,6 +100,24 @@ const routes = [
           title: '性能测试',
           requiresAuth: true
         }
+      },
+      {
+        path: 'toolbox/testgen',
+        name: 'TestGenList',
+        component: () => import('@/views/toolbox/TestGenList.vue'),
+        meta: {
+          title: '用例生成',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'toolbox/testgen/:taskId',
+        name: 'TestGenWorkspace',
+        component: () => import('@/views/toolbox/TestGenWorkspace.vue'),
+        meta: {
+          title: '用例生成工作区',
+          requiresAuth: true
+        }
       }
     ]
   },

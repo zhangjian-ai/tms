@@ -56,6 +56,31 @@ public class MinioUtil {
     }
 
     /**
+     * 按 objectKey + 字节数组上传文件
+     */
+    public boolean uploadFile(String objectKey, byte[] data) {
+        try {
+            String bucketName = minioConfig.getBucketName();
+            if (!minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build())) {
+                minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+            }
+
+            java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(data);
+            ObjectWriteResponse resp = minioClient.putObject(
+                    PutObjectArgs.builder()
+                            .bucket(bucketName)
+                            .object(objectKey)
+                            .stream(bais, data.length, -1)
+                            .contentType("application/octet-stream")
+                            .build());
+            return resp.etag() != null;
+        } catch (Exception e) {
+            log.error("文件上传失败: {}", objectKey, e);
+            throw new RuntimeException("文件上传失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 获取文件临时访问链接，链接默认有效时间300s
      */
     public String getUrl(String fileName) {
@@ -74,7 +99,6 @@ public class MinioUtil {
                     .expiry(minioConfig.getExpire()).build());
 
         } catch (Exception e) {
-            log.error("获取文件链接失败", e);
             throw new RuntimeException("获取文件链接失败: " + e.getMessage());
         }
     }

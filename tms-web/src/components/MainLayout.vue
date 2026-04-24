@@ -55,6 +55,17 @@
             <template #title>性能测试</template>
           </el-menu-item>
         </el-sub-menu>
+
+        <el-sub-menu index="toolbox">
+          <template #title>
+            <el-icon><SetUp /></el-icon>
+            <span>工具箱</span>
+          </template>
+          <el-menu-item index="/toolbox/testgen">
+            <el-icon><Document /></el-icon>
+            <template #title>用例生成</template>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
@@ -117,7 +128,8 @@ import {
   Setting,
   Odometer,
   Lightning,
-  Box
+  Box,
+  SetUp
 } from '@element-plus/icons-vue'
 
 export default {
@@ -132,7 +144,8 @@ export default {
     Setting,
     Odometer,
     Lightning,
-    Box
+    Box,
+    SetUp
   },
   setup() {
     const route = useRoute()
@@ -157,8 +170,10 @@ export default {
         '/functional-test/products': '产品管理',
         '/functional-test/tasks': '任务管理',
         '/special-test/automation': '自动化测试',
-        '/special-test/performance': '性能测试'
+        '/special-test/performance': '性能测试',
+        '/toolbox/testgen': '用例生成'
       }
+      if (route.path.startsWith('/toolbox/testgen/')) return '用例生成工作区'
       return titleMap[route.path] || '设备管理'
     })
 
@@ -288,8 +303,11 @@ export default {
 .main-content {
   background-color: #f5f7fa;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 0;
   margin: 0;
+  height: 0;
+  flex: 1;
 }
 
 /* 响应式设计 */

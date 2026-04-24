@@ -27,8 +27,9 @@ public class CommonController {
         boolean isSuccess = minioUtil.uploadFile(file);
         if (isSuccess){
             info.put("msg", "success");
-
-            String url = minioUtil.getUrl(file.getOriginalFilename());
+            String fileName = file.getOriginalFilename();
+            String url = minioUtil.getUrl(fileName);
+            info.put("fileName", fileName);
             info.put("url", url);
             return Result.success(info);
         }else {
