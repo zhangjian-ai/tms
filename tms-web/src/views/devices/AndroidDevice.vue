@@ -2018,7 +2018,7 @@ export default {
     // 设备占用心跳 - 每5秒发送一次
     const startHoldHeartbeat = () => {
       stopHoldHeartbeat()
-      const wsUrl = config.baseURL.replace('http', 'ws') + '/ws/device/hold'
+      const wsUrl = config.wsURL + '/api/ws/device/hold'
       holdWs = new WebSocket(wsUrl)
       holdWs.onopen = () => {
         sendHoldHeartbeat()

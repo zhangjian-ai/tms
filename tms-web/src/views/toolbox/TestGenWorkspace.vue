@@ -141,8 +141,7 @@ export default {
         return
       }
       if (ws && ws.readyState === WebSocket.OPEN) return
-      const wsBase = config.baseURL.replace('http', 'ws')
-      ws = new WebSocket(`${wsBase}/ws/testgen/${taskId}`)
+      ws = new WebSocket(`${config.wsURL}/api/ws/testgen/${taskId}`)
       ws.onopen = () => {
         store.wsConnected = true
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }

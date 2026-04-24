@@ -214,7 +214,7 @@
                 <version>${spring-boot.version}</version>
                 <configuration>
                     <mainClass>com.seeker.tms.TmsBackendApplication</mainClass>
-                    <skip>true</skip>
+<!--                    <skip>true</skip>-->
                 </configuration>
                 <executions>
                     <execution>
