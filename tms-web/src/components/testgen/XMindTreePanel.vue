@@ -36,6 +36,14 @@ export default {
     let mind = null
     let isInternalUpdate = false
 
+    // 优先级配置
+    const PRIORITY_CONFIG = {
+      'priority-1': { label: 'P0', color: '#f56c6c', number: '0' },
+      'priority-2': { label: 'P1', color: '#f78989', number: '1' },
+      'priority-3': { label: 'P2', color: '#f0ad4e', number: '2' },
+      'priority-4': { label: 'P3', color: '#67c23a', number: '3' }
+    }
+
     // ---- 加载态管理 ----
 
     function applyLoadingState(nodeId) {
@@ -85,10 +93,9 @@ export default {
         nodeType: node.type
       }
       if (isRoot) me.root = true
-      if (node.marker) {
-        var priorityNum = node.marker.replace('priority-', '')
-        var pLevel = parseInt(priorityNum) - 1
-        me.topic = '[P' + pLevel + '] ' + me.topic
+      // 保留 icons 数据（不嵌入 HTML，而是在渲染后手动插入徽章）
+      if (node.icons && node.icons.length > 0) {
+        me.priority = node.icons[0]
       }
       if (node.children && node.children.length > 0) {
         me.children = node.children.map(function(c) { return toME(c, false) })
@@ -98,18 +105,14 @@ export default {
 
     function fromME(me) {
       if (!me) return null
-      var title = me.topic || ''
-      var marker = null
-      var m = title.match(/^\[(P\d)\]\s*/)
-      if (m) {
-        var pLevel = parseInt(m[1].replace('P', ''))
-        marker = 'priority-' + (pLevel + 1)
-        title = title.replace(m[0], '')
-      }
+      var icons = me.priority ? [me.priority] : null
       var node = {
-        id: me.id, title: title,
-        type: me.nodeType || 'free', marker: marker,
-        expanded: me.expanded !== false, children: []
+        id: me.id,
+        title: me.topic || '',
+        type: me.nodeType || 'free',
+        icons: icons,
+        expanded: me.expanded !== false,
+        children: []
       }
       if (me.children && me.children.length > 0) {
         node.children = me.children.map(fromME)
@@ -134,6 +137,9 @@ export default {
 
       if (mind) {
         mind.refresh(data)
+        setTimeout(function() {
+          renderPriorityBadges()
+        }, 0)
         return
       }
 
@@ -211,6 +217,11 @@ export default {
       })
 
       mind.init(data)
+
+      // 渲染完成后插入优先级徽章
+      setTimeout(function() {
+        renderPriorityBadges()
+      }, 0)
 
       // 拦截正在生成测试点的右键菜单
       container.value.addEventListener('contextmenu', function(e) {
@@ -392,11 +403,24 @@ export default {
         ? { background: 'transparent', color: '#333' }
         : { background: NODE_COLORS[newType] || NODE_COLORS.step, color: '#fff' }
 
+      // 设为用例时，自动添加 P2 优先级（如果没有优先级）
+      if (newType === 'case' && !nodeData.priority) {
+        nodeData.priority = 'priority-3'
+      }
+
+      // 设为自由节点时，移除优先级
+      if (newType === 'free') {
+        nodeData.priority = null
+      }
+
       var tpcEl = mind.findEle(nodeId)
       if (tpcEl) {
         tpcEl.style.background = isFree ? 'transparent' : (NODE_COLORS[newType] || NODE_COLORS.step)
         tpcEl.style.color = isFree ? '#333' : '#fff'
       }
+
+      // 重新渲染徽章
+      renderPriorityBadges()
 
       emitUpdate()
     }
@@ -410,6 +434,17 @@ export default {
         var child = nodeObj.children[i]
         child.nodeType = newType
         child.style = { background: bg, color: fg }
+
+        // 设为用例时，自动添加 P2 优先级（如果没有优先级）
+        if (newType === 'case' && !child.priority) {
+          child.priority = 'priority-3'
+        }
+
+        // 设为自由节点时，移除优先级
+        if (newType === 'free') {
+          child.priority = null
+        }
+
         var tpcEl = mind.findEle(child.id)
         if (tpcEl) {
           tpcEl.style.background = bg
@@ -437,6 +472,169 @@ export default {
         return null
       }
       return search(mind.nodeData, nodeId)
+    }
+
+    // ---- 优先级编辑器 ----
+
+    function renderPriorityBadges() {
+      if (!mind || !container.value) return
+
+      // 移除所有已存在的徽章
+      container.value.querySelectorAll('.priority-badge').forEach(function(badge) {
+        badge.remove()
+      })
+
+      // 遍历所有节点，为有优先级的节点插入徽章
+      function traverseAndRender(nodeData) {
+        if (!nodeData) return
+
+        if (nodeData.priority) {
+          var tpcEl = mind.findEle(nodeData.id)
+          if (tpcEl && !tpcEl.querySelector('.priority-badge')) {
+            var config = PRIORITY_CONFIG[nodeData.priority]
+            if (config) {
+              var badge = document.createElement('span')
+              badge.className = 'priority-badge'
+              badge.setAttribute('data-priority', nodeData.priority)
+              badge.setAttribute('data-node-id', nodeData.id)
+              badge.style.cssText = 'background-color: ' + config.color + '; ' +
+                'color: #fff; ' +
+                'display: inline-flex; ' +
+                'align-items: center; ' +
+                'justify-content: center; ' +
+                'padding: 0 6px; ' +
+                'height: 18px; ' +
+                'border-radius: 3px; ' +
+                'font-size: 11px; ' +
+                'font-weight: bold; ' +
+                'margin-right: 6px; ' +
+                'cursor: pointer; ' +
+                'user-select: none; ' +
+                'flex-shrink: 0; ' +
+                'pointer-events: auto; ' +
+                'z-index: 10; ' +
+                'vertical-align: middle;'
+              badge.textContent = config.label
+
+              // 直接在徽章上绑定事件监听器，阻止 Mind Elixir 拦截
+              var stopAndShow = function(e) {
+                e.stopPropagation()
+                e.preventDefault()
+                e.stopImmediatePropagation()
+              }
+
+              badge.addEventListener('mousedown', stopAndShow, true)
+              badge.addEventListener('pointerdown', stopAndShow, true)
+              badge.addEventListener('click', function(e) {
+                e.stopPropagation()
+                e.preventDefault()
+                e.stopImmediatePropagation()
+
+                var currentPriority = badge.getAttribute('data-priority')
+                var nodeId = badge.getAttribute('data-node-id')
+                if (!nodeId) return
+
+                showPrioritySelector(badge, nodeId, currentPriority)
+              }, true)
+
+              // 插入到节点文本前
+              tpcEl.insertBefore(badge, tpcEl.firstChild)
+            }
+          }
+        }
+
+        if (nodeData.children) {
+          nodeData.children.forEach(traverseAndRender)
+        }
+      }
+
+      traverseAndRender(mind.nodeData)
+
+      // 徽章插入后节点宽度变化，重新绘制连接线
+      mind.linkDiv()
+    }
+
+    function showPrioritySelector(badgeEl, nodeId, currentPriority) {
+      // 移除已存在的选择器
+      var existingSelector = document.querySelector('.priority-selector')
+      if (existingSelector) existingSelector.remove()
+
+      // 创建选择器
+      var selector = document.createElement('div')
+      selector.className = 'priority-selector'
+      selector.style.cssText = 'position: absolute; background: #fff; border: 1px solid #dcdfe6; ' +
+        'border-radius: 4px; box-shadow: 0 2px 12px 0 rgba(0,0,0,.1); padding: 4px 0; z-index: 9999;'
+
+      var priorities = ['priority-1', 'priority-2', 'priority-3', 'priority-4']
+      priorities.forEach(function(p) {
+        var config = PRIORITY_CONFIG[p]
+        var item = document.createElement('div')
+        item.className = 'priority-option'
+        item.setAttribute('data-priority', p)
+        item.style.cssText = 'padding: 8px 16px; cursor: pointer; display: flex; align-items: center; ' +
+          'font-size: 14px; color: #606266; transition: background-color 0.2s;'
+        if (p === currentPriority) {
+          item.style.backgroundColor = '#f5f7fa'
+        }
+
+        var badge = document.createElement('span')
+        badge.style.cssText = 'display: inline-flex; align-items: center; justify-content: center; ' +
+          'padding: 0 6px; height: 18px; border-radius: 3px; color: #fff; font-size: 11px; ' +
+          'font-weight: bold; background-color: ' + config.color + ';'
+        badge.textContent = config.label
+
+        item.appendChild(badge)
+
+        item.addEventListener('mouseenter', function() {
+          if (p !== currentPriority) {
+            item.style.backgroundColor = '#f5f7fa'
+          }
+        })
+        item.addEventListener('mouseleave', function() {
+          if (p !== currentPriority) {
+            item.style.backgroundColor = ''
+          }
+        })
+        item.addEventListener('click', function() {
+          updateNodePriority(nodeId, p)
+          selector.remove()
+        })
+
+        selector.appendChild(item)
+      })
+
+      // 定位选择器
+      var rect = badgeEl.getBoundingClientRect()
+      selector.style.left = rect.left + 'px'
+      selector.style.top = (rect.bottom + 4) + 'px'
+
+      document.body.appendChild(selector)
+
+      // 点击外部关闭
+      setTimeout(function() {
+        var closeHandler = function(e) {
+          if (!selector.contains(e.target)) {
+            selector.remove()
+            document.removeEventListener('click', closeHandler)
+          }
+        }
+        document.addEventListener('click', closeHandler)
+      }, 0)
+    }
+
+    function updateNodePriority(nodeId, newPriority) {
+      if (!mind) return
+
+      var nodeData = mind.getObjById(nodeId, mind.nodeData)
+      if (!nodeData) return
+
+      // 更新节点的优先级数据
+      nodeData.priority = newPriority
+
+      // 重新渲染徽章
+      renderPriorityBadges()
+
+      emitUpdate()
     }
 
     // ---- 工具栏 ----
@@ -482,8 +680,11 @@ export default {
       mind.layout()
       mind.linkDiv()
 
-      // 重新应用加载态
-      setTimeout(syncLoadingStates, 50)
+      // 重新渲染优先级徽章
+      setTimeout(function() {
+        renderPriorityBadges()
+        syncLoadingStates()
+      }, 50)
 
       // 保存更新后的数据
       emitUpdate()

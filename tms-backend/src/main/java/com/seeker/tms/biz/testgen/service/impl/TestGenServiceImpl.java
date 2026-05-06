@@ -82,6 +82,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         TestGenTaskPO task = new TestGenTaskPO();
         task.setPrdName(dto.getPrdName());
         task.setPrdType(dto.getPrdType());
+        task.setCreator(dto.getCreator());
         task.setStatus(TaskStatus.NEW.getCode());
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(LocalDateTime.now());
@@ -209,19 +210,24 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
             String docText = fetchDocText(taskId, task.getPrdName());
             String pointTitle = pointNode.getTitle();
-            String type = extractTypeFromTitle(pointTitle);
 
             // buildModulePath 需要 root，在锁内获取
-            String module;
+            // 现在路径已经包含完整层级：分类-模块1-模块2-...
+            String modulePath;
             synchronized (lock) {
                 XMindNode root = getXMindData(taskId);
-                module = buildModulePath(root, pointNode);
+                modulePath = buildModulePath(root, pointNode);
             }
+
+            // 从路径中提取分类（第一段）和模块路径（剩余部分）
+            String[] pathParts = modulePath.split("-", 2);
+            String type = pathParts.length > 0 ? pathParts[0] : "功能检查";
+            String module = pathParts.length > 1 ? pathParts[1] : "";
 
             JSONObject pointPayload = new JSONObject();
             pointPayload.put("type", type);
             pointPayload.put("module", module);
-            pointPayload.put("content", pointTitle.replaceFirst("^\\[.*?\\]\\s*", ""));
+            pointPayload.put("content", pointTitle);
 
             callLlmStreaming(
                     buildCaseGenSystem(),
@@ -532,15 +538,23 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         content = content.replaceAll("[\\n\\r]+", " ").trim();
         if (type != null) type = type.replaceAll("[\\n\\r]+", " ").trim();
 
+        // 1. 先找或创建分类节点（功能检查、界面检查等）
+        String typeLabel = type != null ? type : "功能检查";
+        XMindNode typeNode = findChildByTitle(root, typeLabel);
+        if (typeNode == null) {
+            typeNode = newNode("module_" + UUID.randomUUID(), typeLabel, "module");
+            root.getChildren().add(typeNode);
+        }
+
+        // 2. 在分类节点下创建模块层级
         String[] layers = module.split("-");
         String topModule = layers[0].trim();
         String subModule = layers.length > 1 ? layers[1].trim() : null;
 
-        // 查找或创建模块节点
-        XMindNode moduleNode = findChildByTitle(root, topModule);
+        XMindNode moduleNode = findChildByTitle(typeNode, topModule);
         if (moduleNode == null) {
             moduleNode = newNode("module_" + UUID.randomUUID(), topModule, "module");
-            root.getChildren().add(moduleNode);
+            typeNode.getChildren().add(moduleNode);
         }
 
         XMindNode targetNode = moduleNode;
@@ -553,8 +567,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             targetNode = subNode;
         }
 
-        XMindNode pointNode = newNode("point_" + UUID.randomUUID(),
-                "[" + (type != null ? type : "功能检查") + "] " + content, "point");
+        // 3. 创建测试点节点（不再在标题前加分类前缀）
+        XMindNode pointNode = newNode("point_" + UUID.randomUUID(), content, "point");
         targetNode.getChildren().add(pointNode);
     }
 
@@ -564,17 +578,17 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         if (caseName == null) return null;
 
         String priority = c.getString("优先级");
-        String marker = null;
+        List<String> icons = null;
         if (priority != null && priority.startsWith("P")) {
             try {
                 int level = Integer.parseInt(priority.substring(1));
-                marker = "priority-" + (level + 1);
+                icons = List.of("priority-" + (level + 1));
             } catch (NumberFormatException e) {
                 log.warn("无法解析优先级: {}", priority);
             }
         }
         XMindNode caseNode = newNode("case_" + UUID.randomUUID(), caseName, "case");
-        caseNode.setMarker(marker);
+        caseNode.setIcons(icons);
         caseNode.setExpanded(false);
 
         List<XMindNode> children = new ArrayList<>();
@@ -604,11 +618,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             if (title.equals(child.getTitle())) return child;
         }
         return null;
-    }
-
-    private String extractTypeFromTitle(String title) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^\\[(.+?)\\]").matcher(title);
-        return m.find() ? m.group(1) : "功能检查";
     }
 
     private String buildModulePath(XMindNode root, XMindNode targetNode) {
@@ -701,100 +710,52 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      * 导出结构：根 → 类型 → 模块路径 → 用例
      */
     private XMindNode rebuildForExport(XMindNode root) {
-        // 收集所有模块路径和用例
-        Map<String, Map<String, List<XMindNode>>> casesByType = new LinkedHashMap<>();
-        Set<String> allModulePaths = new LinkedHashSet<>();
-        collectModulesAndCases(root, new ArrayList<>(), casesByType, allModulePaths);
-
-        XMindNode exportRoot = newNode(root.getId(), root.getTitle(), "root");
-
-        // 按类型分组
-        Map<String, Set<String>> modulesByType = new LinkedHashMap<>();
-        for (String path : allModulePaths) {
-            // 从路径中提取类型（路径格式：类型-模块1-模块2...）
-            String[] parts = path.split("-", 2);
-            if (parts.length > 0) {
-                String type = parts[0];
-                modulesByType.computeIfAbsent(type, k -> new LinkedHashSet<>()).add(path);
-            }
-        }
-
-        // 构建导出树
-        for (Map.Entry<String, Set<String>> typeEntry : modulesByType.entrySet()) {
-            String type = typeEntry.getKey();
-            XMindNode typeNode = newNode("type_" + UUID.randomUUID(), type, "module");
-
-            // 构建该类型下的所有模块路径
-            for (String fullPath : typeEntry.getValue()) {
-                String[] parts = fullPath.split("-");
-                XMindNode parent = typeNode;
-
-                // 跳过第一个（类型），从第二个开始构建模块层级
-                for (int i = 1; i < parts.length; i++) {
-                    String moduleName = parts[i].trim();
-                    if (moduleName.isEmpty()) continue;
-
-                    XMindNode existing = findChildByTitle(parent, moduleName);
-                    if (existing == null) {
-                        existing = newNode("module_" + UUID.randomUUID(), moduleName, "module");
-                        parent.getChildren().add(existing);
-                    }
-                    parent = existing;
-                }
-
-                // 挂载该路径下的用例
-                Map<String, List<XMindNode>> casesMap = casesByType.get(type);
-                if (casesMap != null) {
-                    List<XMindNode> cases = casesMap.get(fullPath);
-                    if (cases != null && !cases.isEmpty()) {
-                        parent.getChildren().addAll(cases);
-                    }
-                }
-            }
-
-            exportRoot.getChildren().add(typeNode);
-        }
-
-        return exportRoot;
+        // 树结构已经是：根节点 → 分类（功能检查/界面检查）→ 模块 → 测试点 → 用例
+        // 导出时只需：过滤掉 free 节点和 point 节点，保留其他层级
+        return filterForExport(root);
     }
 
-    private void collectModulesAndCases(XMindNode node, List<String> modulePath,
-                                        Map<String, Map<String, List<XMindNode>>> casesByType,
-                                        Set<String> allModulePaths) {
-        // 自由节点跳过
-        if ("free".equals(node.getType())) return;
-
-        if ("point".equals(node.getType())) {
-            String type = extractTypeFromTitle(node.getTitle());
-            String fullPath = type + (modulePath.isEmpty() ? "" : "-" + String.join("-", modulePath));
-
-            // 记录该路径（即使没有用例）
-            allModulePaths.add(fullPath);
-
-            // 收集用例
-            List<XMindNode> cases = node.getChildren() != null
-                    ? node.getChildren().stream()
-                          .filter(c -> "case".equals(c.getType()))
-                          .collect(java.util.stream.Collectors.toList())
-                    : List.of();
-
-            if (!cases.isEmpty()) {
-                casesByType.computeIfAbsent(type, k -> new LinkedHashMap<>())
-                           .computeIfAbsent(fullPath, k -> new ArrayList<>())
-                           .addAll(cases);
-            }
-            return;
+    private XMindNode filterForExport(XMindNode node) {
+        // 跳过自由节点
+        if ("free".equals(node.getType())) {
+            return null;
         }
 
-        if ("module".equals(node.getType())) {
-            modulePath.add(node.getTitle());
-        }
+        // 其他节点：递归过滤子节点
+        XMindNode filtered = new XMindNode();
+        filtered.setId(node.getId());
+        filtered.setTitle(node.getTitle());
+        filtered.setType(node.getType());
+        filtered.setIcons(node.getIcons());
+        filtered.setExpanded(node.getExpanded());
 
         if (node.getChildren() != null) {
+            List<XMindNode> filteredChildren = new ArrayList<>();
             for (XMindNode child : node.getChildren()) {
-                collectModulesAndCases(child, new ArrayList<>(modulePath), casesByType, allModulePaths);
+                if ("free".equals(child.getType())) {
+                    continue;
+                }
+                if ("point".equals(child.getType())) {
+                    // 测试点节点：跳过自身，提取其用例子节点挂到当前层级
+                    if (child.getChildren() != null) {
+                        for (XMindNode caseNode : child.getChildren()) {
+                            XMindNode filteredCase = filterForExport(caseNode);
+                            if (filteredCase != null) {
+                                filteredChildren.add(filteredCase);
+                            }
+                        }
+                    }
+                } else {
+                    XMindNode filteredChild = filterForExport(child);
+                    if (filteredChild != null) {
+                        filteredChildren.add(filteredChild);
+                    }
+                }
             }
+            filtered.setChildren(filteredChildren);
         }
+
+        return filtered;
     }
 
     // ============ Prompt 模板 ============

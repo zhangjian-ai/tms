@@ -12,8 +12,8 @@ import java.util.List;
 public class XMindNode {
     private String id;
     private String title;
-    private String type;  // root, module, point, case, step
-    private String marker;  // priority-1, priority-2, etc.
+    private String type;  // root, module, point, case, step, free
+    private List<String> icons;  // priority-1, priority-2, etc.
     private Boolean expanded;
     private List<XMindNode> children;
 }

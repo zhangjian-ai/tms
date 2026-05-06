@@ -12,12 +12,13 @@
           <el-tag size="small">{{ prdTypeMap[row.prdType] || row.prdType }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column prop="creator" label="创建人" width="120" align="center" />
       <el-table-column prop="status" label="状态" width="100" align="center">
         <template #default="{ row }">
           <el-tag :type="statusTypeMap[row.status]" size="small">{{ statusTextMap[row.status] || row.status }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createTime" label="创建时间" width="170" align="center" />
+      <el-table-column prop="createTime" label="创建时间" width="170" align="center" :formatter="createTimeFormatter" />
       <el-table-column label="操作" width="280" align="center" fixed="right">
         <template #default="{ row }">
           <el-button
@@ -104,6 +105,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { testgenApi } from '@/api/testgen'
+import { useUserStore } from '@/stores/user'
 import config from '@/config/index.js'
 
 export default {
@@ -111,6 +113,7 @@ export default {
   components: { UploadFilled },
   setup() {
     const router = useRouter()
+    const userStore = useUserStore()
     const taskList = ref([])
     const loading = ref(false)
     const creating = ref(false)
@@ -127,6 +130,13 @@ export default {
     const statusTextMap = { NEW: '新建', GENERATING: '生成中', EDITING: '编辑中', FINISHED: '已完成', FAILED: '失败' }
     const statusTypeMap = { NEW: 'info', GENERATING: 'warning', EDITING: 'info', FINISHED: 'success', FAILED: 'danger' }
     const prdTypeMap = { BIZ: '业务需求', BURY: '埋点需求', API: '接口需求' }
+
+    const formatDateTime = (val) => {
+      if (!val) return ''
+      return String(val).replace('T', ' ').replace(/\.\d+$/, '').substring(0, 19)
+    }
+
+    const createTimeFormatter = (row) => formatDateTime(row && row.createTime)
 
     const fetchList = async () => {
       loading.value = true
@@ -183,6 +193,7 @@ export default {
       }
       creating.value = true
       try {
+        createForm.value.creator = userStore.userInfo?.username || ''
         const res = await testgenApi.createTask(createForm.value)
         const taskId = res.data.taskId
         createDialogVisible.value = false
@@ -234,6 +245,7 @@ export default {
     return {
       taskList, loading, creating, createDialogVisible, createForm, formRef, uploadRef, uploadUrl, formRules,
       statusTextMap, statusTypeMap, prdTypeMap,
+      formatDateTime, createTimeFormatter,
       fetchList, beforeUpload, onUploadSuccess, onUploadError, onUploadRemove,
       openCreateDialog, handleCreate, continueGen, regenerate, downloadXmind
     }

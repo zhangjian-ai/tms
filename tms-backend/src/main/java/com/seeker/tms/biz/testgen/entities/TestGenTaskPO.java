@@ -21,6 +21,7 @@ public class TestGenTaskPO {
     private String status;
     private String message;
     private String xmindFileName;
+    private String creator;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

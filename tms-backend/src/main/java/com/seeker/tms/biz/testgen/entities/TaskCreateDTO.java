@@ -16,4 +16,7 @@ public class TaskCreateDTO {
     @ApiModelProperty(value = "需求类型: BIZ/BURY/API", required = true)
     @NotBlank(message = "需求类型不能为空")
     private String prdType;
+
+    @ApiModelProperty("创建人")
+    private String creator;
 }

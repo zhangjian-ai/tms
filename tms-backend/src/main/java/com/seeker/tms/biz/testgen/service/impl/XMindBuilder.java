@@ -62,11 +62,13 @@ public class XMindBuilder {
             topic.put("structureClass", "org.xmind.ui.logic.right");
         }
 
-        if (node.getMarker() != null) {
+        if (node.getIcons() != null && !node.getIcons().isEmpty()) {
             JSONArray markers = new JSONArray();
-            JSONObject marker = new JSONObject();
-            marker.put("markerId", node.getMarker());
-            markers.add(marker);
+            for (String icon : node.getIcons()) {
+                JSONObject marker = new JSONObject();
+                marker.put("markerId", icon);
+                markers.add(marker);
+            }
             topic.put("markers", markers);
         }
 
