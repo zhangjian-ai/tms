@@ -221,7 +221,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
             // 从路径中提取分类（第一段）和模块路径（剩余部分）
             String[] pathParts = modulePath.split("-", 2);
-            String type = pathParts.length > 0 ? pathParts[0] : "功能检查";
+            String type = pathParts.length > 0 ? pathParts[0] : "功能逻辑";
             String module = pathParts.length > 1 ? pathParts[1] : "";
 
             JSONObject pointPayload = new JSONObject();
@@ -538,8 +538,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         content = content.replaceAll("[\\n\\r]+", " ").trim();
         if (type != null) type = type.replaceAll("[\\n\\r]+", " ").trim();
 
-        // 1. 先找或创建分类节点（功能检查、界面检查等）
-        String typeLabel = type != null ? type : "功能检查";
+        // 1. 先找或创建分类节点（功能逻辑、界面UI等）
+        String typeLabel = type != null ? type : "功能逻辑";
         XMindNode typeNode = findChildByTitle(root, typeLabel);
         if (typeNode == null) {
             typeNode = newNode("module_" + UUID.randomUUID(), typeLabel, "module");
@@ -705,12 +705,12 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      * 重组树结构用于 XMind 导出：
      * 1. 过滤 free 节点
      * 2. 去掉测试点节点，用例直接挂到模块下
-     * 3. 按测试类型（功能检查/界面检查等）提升为根节点下第一级
+     * 3. 按测试类型（功能逻辑/界面UI等）提升为根节点下第一级
      * 4. 保留所有模块节点（即使没有用例）
      * 导出结构：根 → 类型 → 模块路径 → 用例
      */
     private XMindNode rebuildForExport(XMindNode root) {
-        // 树结构已经是：根节点 → 分类（功能检查/界面检查）→ 模块 → 测试点 → 用例
+        // 树结构已经是：根节点 → 分类（功能逻辑/界面UI）→ 模块 → 测试点 → 用例
         // 导出时只需：过滤掉 free 节点和 point 节点，保留其他层级
         return filterForExport(root);
     }
