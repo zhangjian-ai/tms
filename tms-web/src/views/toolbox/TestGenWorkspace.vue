@@ -164,7 +164,13 @@ export default {
 
     async function checkAndTriggerGeneration() {
       const { generate, regenerate } = route.query
+
+      // 重新生成：只有非生成中状态才触发，避免刷新页面重复清空数据
       if (regenerate === 'true') {
+        if (store.task && store.task.status === 'GENERATING') {
+          console.log('任务正在生成中，跳过重新生成')
+          return
+        }
         if (store.task) {
           store.task.status = 'GENERATING'
           store.task.progress = 0
@@ -177,7 +183,16 @@ export default {
           ElMessage.error('重新生成失败')
           console.error(e)
         }
-      } else if (generate === 'true') {
+        return
+      }
+
+      // 首次生成：只有 NEW 状态才触发，避免刷新页面重复生成
+      if (generate === 'true') {
+        if (!store.task || store.task.status !== 'NEW') {
+          console.log('任务状态不是 NEW，跳过生成。当前状态:', store.task?.status)
+          return
+        }
+
         if (store.task) {
           store.task.status = 'GENERATING'
           store.task.progress = 0

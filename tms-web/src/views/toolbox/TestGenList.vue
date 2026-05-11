@@ -19,7 +19,7 @@
         </template>
       </el-table-column>
       <el-table-column prop="createTime" label="创建时间" width="170" align="center" :formatter="createTimeFormatter" />
-      <el-table-column label="操作" width="280" align="center" fixed="right">
+      <el-table-column label="操作" width="340" align="center" fixed="right">
         <template #default="{ row }">
           <el-button
             v-if="row.status === 'NEW'"
@@ -53,6 +53,7 @@
             重新生成
           </el-button>
           <el-button size="small" :disabled="!row.xmindFileName" @click="downloadXmind(row)">下载</el-button>
+          <el-button size="small" type="danger" @click="deleteTask(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -239,6 +240,33 @@ export default {
       }
     }
 
+    const deleteTask = async (row) => {
+      try {
+        await ElMessageBox.confirm(
+          `确定要删除任务"${row.prdName}"吗？删除后不可恢复。`,
+          '删除确认',
+          {
+            confirmButtonText: '确定删除',
+            cancelButtonText: '取消',
+            type: 'warning'
+          }
+        )
+      } catch (e) {
+        return
+      }
+      try {
+        const res = await testgenApi.deleteTask(row.id)
+        if (res.code === 0) {
+          ElMessage.success('删除成功')
+          fetchList()
+        } else {
+          ElMessage.error(res.msg || '删除失败')
+        }
+      } catch (e) {
+        ElMessage.error('删除失败')
+      }
+    }
+
     onMounted(fetchList)
     onActivated(fetchList)
 
@@ -247,7 +275,7 @@ export default {
       statusTextMap, statusTypeMap, prdTypeMap,
       formatDateTime, createTimeFormatter,
       fetchList, beforeUpload, onUploadSuccess, onUploadError, onUploadRemove,
-      openCreateDialog, handleCreate, continueGen, regenerate, downloadXmind
+      openCreateDialog, handleCreate, continueGen, regenerate, downloadXmind, deleteTask
     }
   }
 }

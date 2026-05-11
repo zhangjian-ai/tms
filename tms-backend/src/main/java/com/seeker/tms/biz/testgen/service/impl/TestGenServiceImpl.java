@@ -283,7 +283,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         if (root == null) throw new RuntimeException("暂无数据");
 
         TestGenTaskPO taskPO = taskMapper.selectById(taskId);
-        String fileName = buildRootTitle(taskPO.getPrdName()) + ".xmind";
+        // 文件名加 taskId 后缀避免同需求文档不同任务相互覆盖/误删
+        String fileName = buildRootTitle(taskPO.getPrdName()) + "_" + taskId.toString() + ".xmind";
 
         XMindNode exportRoot = rebuildForExport(root);
         byte[] xmindBytes = XMindBuilder.build(exportRoot);
@@ -345,6 +346,41 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         Set<String> points = generatingPoints.get(taskId);
         vo.setGeneratingPointIds(points != null ? new ArrayList<>(points) : List.of());
         return vo;
+    }
+
+    // ---- 删除任务 ----
+
+    @Override
+    public void deleteTask(Integer taskId) {
+        TestGenTaskPO task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new RuntimeException("任务不存在");
+        }
+
+        // 1. 删除 MinIO 中的 XMind 文件（不删除原始需求文档）
+        if (task.getXmindFileName() != null) {
+            try {
+                minioUtil.deleteFile(task.getXmindFileName());
+                log.info("已删除 XMind 文件: {}", task.getXmindFileName());
+            } catch (Exception e) {
+                log.warn("删除 XMind 文件失败: {}", task.getXmindFileName(), e);
+            }
+        }
+
+        // 2. 清理 Redis 缓存
+        String xmindKey = String.format(REDIS_KEY_XMIND, taskId);
+        String chatKey = String.format(REDIS_KEY_CHAT, taskId);
+        redisTemplate.delete(List.of(xmindKey, chatKey));
+        log.info("已清理 Redis 缓存: {}, {}", xmindKey, chatKey);
+
+        // 3. 清理内存缓存
+        generatingTasks.remove(taskId);
+        generatingPoints.remove(taskId);
+        taskLocks.remove(taskId);
+
+        // 4. 删除 MySQL 记录
+        taskMapper.deleteById(taskId);
+        log.info("已删除任务记录: taskId={}", taskId);
     }
 
     // ============ 内部工具方法 ============

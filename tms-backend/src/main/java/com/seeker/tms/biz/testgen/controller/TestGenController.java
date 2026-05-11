@@ -94,6 +94,13 @@ public class TestGenController {
         return Result.success(testGenService.restoreTask(taskId));
     }
 
+    @ApiOperation("删除任务")
+    @DeleteMapping("/task/{taskId}")
+    public Result<Void> deleteTask(@PathVariable Integer taskId) {
+        testGenService.deleteTask(taskId);
+        return Result.success();
+    }
+
     @ApiOperation("获取 XMind 下载链接")
     @GetMapping("/task/{taskId}/download-url")
     public Result<String> getDownloadUrl(@PathVariable Integer taskId) {

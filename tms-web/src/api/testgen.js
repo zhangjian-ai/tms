@@ -31,6 +31,9 @@ export const testgenApi = {
   restoreTask(taskId) {
     return api.get(`/testgen/task/${taskId}/restore`)
   },
+  deleteTask(taskId) {
+    return api.delete(`/testgen/task/${taskId}`)
+  },
   getDownloadUrl(taskId) {
     return api.get(`/testgen/task/${taskId}/download-url`)
   }

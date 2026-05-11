@@ -15,4 +15,5 @@ public interface TestGenService {
     String finishTask(Integer taskId);
     void regenerateTask(Integer taskId);
     RestoreVO restoreTask(Integer taskId);
+    void deleteTask(Integer taskId);
 }
