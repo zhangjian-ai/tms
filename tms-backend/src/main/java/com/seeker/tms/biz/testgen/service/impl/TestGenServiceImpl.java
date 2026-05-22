@@ -630,7 +630,10 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         List<XMindNode> children = new ArrayList<>();
         String pre = c.getString("前置条件");
         if (pre != null && !pre.isBlank()) {
-            children.add(newNode("step_" + UUID.randomUUID(), "前置条件: " + pre, "step"));
+            children.add(newNode("step_" + UUID.randomUUID(), "前置条件:\n" + pre, "step"));
+        }else{
+            // 保证必有一个前置条件
+            children.add(newNode("step_" + UUID.randomUUID(), "前置条件:", "step"));
         }
         JSONArray steps = c.getJSONArray("测试步骤");
         if (steps != null) {

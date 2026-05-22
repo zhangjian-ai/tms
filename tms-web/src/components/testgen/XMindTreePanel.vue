@@ -246,12 +246,18 @@ export default {
         }
       }, true)
 
-      // 选中节点后重新应用闪动 class（防止被 Mind Elixir 清除）
+      // 选中节点后重新应用闪动 class（防止被 Mind Elixir 清除），并重建徽章布局
       mind.bus.addListener('selectNode', function() {
-        setTimeout(syncLoadingStates, 0)
+        setTimeout(function() {
+          syncLoadingStates()
+          renderPriorityBadges()
+        }, 0)
       })
       mind.bus.addListener('unselectNode', function() {
-        setTimeout(syncLoadingStates, 0)
+        setTimeout(function() {
+          syncLoadingStates()
+          renderPriorityBadges()
+        }, 0)
       })
 
       // 监听右键菜单显示，动态控制菜单项可见性和顺序
@@ -336,17 +342,21 @@ export default {
           }
 
           // 编辑开始，固定编辑框尺寸
+          // 用 offsetWidth/offsetHeight 而非 getBoundingClientRect，
+          // 因为 Mind Elixir 通过 transform: scale 实现缩放，rect 是缩放后的视口尺寸，
+          // 而 inline style 是缩放前的布局尺寸，混用会导致编辑框尺寸与节点对不上
           setTimeout(function() {
             var tpcEl = operation.obj ? mind.findEle(operation.obj.id) : null
             var inputBox = document.getElementById('input-box')
             if (inputBox && tpcEl) {
-              var rect = tpcEl.getBoundingClientRect()
-              inputBox.style.width = rect.width + 'px'
-              inputBox.style.minWidth = rect.width + 'px'
-              inputBox.style.maxWidth = rect.width + 'px'
-              inputBox.style.height = rect.height + 'px'
-              inputBox.style.minHeight = rect.height + 'px'
-              inputBox.style.maxHeight = rect.height + 'px'
+              var width = tpcEl.offsetWidth
+              var height = tpcEl.offsetHeight
+              inputBox.style.width = width + 'px'
+              inputBox.style.minWidth = width + 'px'
+              inputBox.style.maxWidth = width + 'px'
+              inputBox.style.height = height + 'px'
+              inputBox.style.minHeight = height + 'px'
+              inputBox.style.maxHeight = height + 'px'
               inputBox.style.overflow = 'auto'
               inputBox.style.zIndex = '1000'
             }
@@ -362,10 +372,16 @@ export default {
               tpcEl.style.color = '#333'
             }
           }
+          // 新增节点会触发父节点重新布局，徽章 wrapper 可能丢失，需重新渲染
+          setTimeout(function() { renderPriorityBadges() }, 0)
           emitUpdate()
         } else if (operation && operation.name === 'finishEdit') {
+          // 编辑结束后 Mind Elixir 会重置节点 DOM，需要重新渲染徽章和包装
+          setTimeout(function() { renderPriorityBadges() }, 0)
           emitUpdate()
         } else {
+          // 其它操作（移动、删除等）也可能影响节点 DOM，统一防御性重新渲染
+          setTimeout(function() { renderPriorityBadges() }, 0)
           emitUpdate()
         }
       })
@@ -479,9 +495,22 @@ export default {
     function renderPriorityBadges() {
       if (!mind || !container.value) return
 
-      // 移除所有已存在的徽章
+      // 清理已有徽章
       container.value.querySelectorAll('.priority-badge').forEach(function(badge) {
         badge.remove()
+      })
+      // 清理 flex 标记并解包装：把 .me-tpc-content 内的子节点放回 me-tpc
+      // 注意：Mind Elixir 选中节点时会用 className = "selected" 整体覆盖 class，
+      // 所以这里改用 data-attribute 做标记，避免被覆盖
+      container.value.querySelectorAll('me-tpc[data-has-priority-badge]').forEach(function(tpc) {
+        tpc.removeAttribute('data-has-priority-badge')
+        var wrapper = tpc.querySelector(':scope > .me-tpc-content')
+        if (wrapper) {
+          while (wrapper.firstChild) {
+            tpc.insertBefore(wrapper.firstChild, wrapper)
+          }
+          wrapper.remove()
+        }
       })
 
       // 遍历所有节点，为有优先级的节点插入徽章
@@ -493,6 +522,22 @@ export default {
           if (tpcEl && !tpcEl.querySelector('.priority-badge')) {
             var config = PRIORITY_CONFIG[nodeData.priority]
             if (config) {
+              // 把 me-tpc 现有子节点（排除绝对定位的辅助元素）整体包进 .me-tpc-content
+              var wrapper = document.createElement('span')
+              wrapper.className = 'me-tpc-content'
+              var toWrap = []
+              for (var i = 0; i < tpcEl.childNodes.length; i++) {
+                var child = tpcEl.childNodes[i]
+                if (child.nodeType === 1) {
+                  if (child.classList.contains('generating-mask')) continue
+                  if (child.classList.contains('insert-preview')) continue
+                  if (child.classList.contains('priority-badge')) continue
+                }
+                toWrap.push(child)
+              }
+              toWrap.forEach(function(n) { wrapper.appendChild(n) })
+              tpcEl.appendChild(wrapper)
+
               var badge = document.createElement('span')
               badge.className = 'priority-badge'
               badge.setAttribute('data-priority', nodeData.priority)
@@ -512,8 +557,7 @@ export default {
                 'user-select: none; ' +
                 'flex-shrink: 0; ' +
                 'pointer-events: auto; ' +
-                'z-index: 10; ' +
-                'vertical-align: middle;'
+                'z-index: 10;'
               badge.textContent = config.label
 
               // 直接在徽章上绑定事件监听器，阻止 Mind Elixir 拦截
@@ -537,8 +581,9 @@ export default {
                 showPrioritySelector(badge, nodeId, currentPriority)
               }, true)
 
-              // 插入到节点文本前
-              tpcEl.insertBefore(badge, tpcEl.firstChild)
+              // 徽章作为第一个 flex item 放在内容包装前
+              tpcEl.insertBefore(badge, wrapper)
+              tpcEl.setAttribute('data-has-priority-badge', 'true')
             }
           }
         }
@@ -760,6 +805,23 @@ export default {
   font-size: 16px !important;
   font-weight: 600 !important;
 }
+/* 非 root 节点最大宽度调整为原 35em 的 2/3，短内容仍自适应 */
+.map-container me-parent me-tpc {
+  max-width: 23.3em !important;
+  word-break: break-word;
+}
+/* 带优先级徽章的节点：用 flex 布局让徽章保持在节点前端整体的垂直中心，文本可换行 */
+/* 用 data-attribute 而非 class，避免被 Mind Elixir 选中时的 className 重置覆盖 */
+.map-container me-parent me-tpc[data-has-priority-badge] {
+  display: flex !important;
+  align-items: center;
+}
+.map-container me-parent me-tpc[data-has-priority-badge] .me-tpc-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
 .map-container me-parent:hover me-tpc {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
   transform: translateY(-1px);
@@ -780,13 +842,15 @@ export default {
   opacity: 1 !important;
 }
 
-/* 编辑框样式：确保完全覆盖原节点，处理内容溢出 */
+/* 编辑框样式：让 Mind Elixir 自动复制原节点的 background/color，
+   节点是什么颜色，编辑时就是什么颜色，体验上等同于"在节点里直接输入"。
+   仅加 outline 作为编辑态视觉提示。 */
 .map-container #input-box {
   z-index: 1000 !important;
-  background-color: #2c3e50 !important;
-  color: #fff !important;
   overflow: auto !important;
   box-sizing: border-box !important;
+  outline: 2px solid #409eff !important;
+  outline-offset: 1px !important;
 }
 
 /* 生成中节点样式：紫色蒙层闪动 */

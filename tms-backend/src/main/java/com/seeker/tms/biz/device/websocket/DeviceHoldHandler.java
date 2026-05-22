@@ -1,4 +1,4 @@
-package com.seeker.tms.websocket;
+package com.seeker.tms.biz.device.websocket;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;

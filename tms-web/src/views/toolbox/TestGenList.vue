@@ -6,20 +6,21 @@
     </div>
 
     <el-table :data="taskList" v-loading="loading" stripe header-cell-class-name="center-header">
-      <el-table-column prop="prdName" label="需求文档" min-width="200" align="center" />
-      <el-table-column prop="prdType" label="需求类型" width="100" align="center">
+      <el-table-column prop="id" label="ID" min-width="80" align="center" />
+      <el-table-column prop="prdName" label="需求文档" min-width="380" align="left" show-overflow-tooltip />
+      <el-table-column prop="prdType" label="需求类型" min-width="110" align="center">
         <template #default="{ row }">
           <el-tag size="small">{{ prdTypeMap[row.prdType] || row.prdType }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="creator" label="创建人" width="120" align="center" />
-      <el-table-column prop="status" label="状态" width="100" align="center">
+      <el-table-column prop="creator" label="创建人" min-width="120" align="center" />
+      <el-table-column prop="status" label="状态" min-width="100" align="center">
         <template #default="{ row }">
           <el-tag :type="statusTypeMap[row.status]" size="small">{{ statusTextMap[row.status] || row.status }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createTime" label="创建时间" width="170" align="center" :formatter="createTimeFormatter" />
-      <el-table-column label="操作" width="340" align="center" fixed="right">
+      <el-table-column prop="createTime" label="创建时间" min-width="180" align="center" :formatter="createTimeFormatter" />
+      <el-table-column label="操作" min-width="240" align="center" fixed="right">
         <template #default="{ row }">
           <el-button
             v-if="row.status === 'NEW'"

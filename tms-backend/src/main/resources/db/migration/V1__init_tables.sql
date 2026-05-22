@@ -34,71 +34,6 @@ CREATE TABLE IF NOT EXISTS `device_connection` (
     CONSTRAINT `fk_device_id` FOREIGN KEY (`device_id`) REFERENCES `device` (`id`) ON UPDATE CASCADE ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- 模块表
-CREATE TABLE IF NOT EXISTS `module` (
-    `id` int unsigned auto_increment COMMENT '主键ID',
-    `name` varchar(48) NOT NULL COMMENT '模块名称',
-    `parent_id` int unsigned COMMENT '父模块ID',
-    `is_product` tinyint default 0 COMMENT '1表示是',
-    `create_time` datetime NOT NULL COMMENT '创建时间',
-    `update_time` datetime on update current_timestamp NOT NULL COMMENT '更新时间',
-    PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- 测试用例表
-CREATE TABLE IF NOT EXISTS `test_case` (
-    `id` int unsigned auto_increment COMMENT '主键ID',
-    `name` varchar(48) NOT NULL COMMENT '用例名称',
-    `module_id` int unsigned NOT NULL COMMENT '归属模块ID',
-    `auto_id` int unsigned COMMENT '自动化ID',
-    `priority` tinyint NOT NULL COMMENT '用例优先级',
-    `create_time` datetime NOT NULL COMMENT '创建时间',
-    `update_time` datetime on update current_timestamp NOT NULL COMMENT '更新时间',
-    PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- 测试步骤表
-CREATE TABLE IF NOT EXISTS `test_step` (
-    `id` int unsigned auto_increment COMMENT '主键ID',
-    `detail` varchar(256) NOT NULL COMMENT '步骤详情',
-    `result` varchar(256) COMMENT '预期结果',
-    `is_condition` tinyint default 0 COMMENT '1表示是',
-    `case_id` int unsigned NOT NULL COMMENT '归属用例ID',
-    `order` tinyint NOT NULL COMMENT '步骤顺序',
-    `create_time` datetime NOT NULL COMMENT '创建时间',
-    `update_time` datetime on update current_timestamp NOT NULL COMMENT '更新时间',
-    PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- 接口表
-CREATE TABLE IF NOT EXISTS `api` (
-    `id` int unsigned auto_increment COMMENT '主键ID',
-    `name` varchar(48) NOT NULL COMMENT '接口名称',
-    `proto` varchar(16) NOT NULL COMMENT '接口协议',
-    `url` varchar(256) NOT NULL COMMENT '请求地址',
-    `method` enum('GET', 'POST', 'PUT', 'DELETE') default 'POST' COMMENT '请求方式',
-    `create_time` datetime NOT NULL COMMENT '创建时间',
-    `update_time` datetime on update current_timestamp NOT NULL COMMENT '更新时间',
-    PRIMARY KEY (`id`),
-    UNIQUE idx_unique(`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- 性能测试表
-CREATE TABLE IF NOT EXISTS `perf_test` (
-    `id` int unsigned auto_increment COMMENT '主键ID',
-    `name` varchar(64) NOT NULL COMMENT '任务名称',
-    `dataset` varchar(128) COMMENT '数据文件名称',
-    `proto` varchar(128) COMMENT '协议文件名称',
-    `compress` enum('gzip') COMMENT '数据压缩方式',
-    `encryption` enum('xor') COMMENT '数据加密方式',
-    `api_invokes` json NOT NULL COMMENT '接口调用数据',
-    `report` varchar(128) COMMENT '测试报告文件名称',
-    `create_time` datetime NOT NULL COMMENT '创建时间',
-    `update_time` datetime on update current_timestamp NOT NULL COMMENT '更新时间',
-    PRIMARY KEY (`id`),
-    UNIQUE idx_unique(`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
 -- 用户表
 CREATE TABLE IF NOT EXISTS `user` (
     `id` int unsigned auto_increment COMMENT '主键ID',
@@ -116,6 +51,7 @@ CREATE TABLE IF NOT EXISTS `test_gen_task` (
     `status` enum('NEW', 'GENERATING', 'EDITING', 'FINISHED', 'FAILED') default 'NEW' COMMENT '状态',
     `message` text COMMENT '提示信息',
     `xmind_file_name` varchar(200) COMMENT '导出的XMind文件名(MinIO object key)',
+    `creator`  VARCHAR(50) COMMENT '创建人',
     `create_time` datetime NOT NULL COMMENT '创建时间',
     `update_time` datetime NOT NULL COMMENT '更新时间',
     INDEX idx_status (`status`),

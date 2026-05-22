@@ -21,40 +21,6 @@
           <el-icon><Cellphone /></el-icon>
           <template #title>设备管理</template>
         </el-menu-item>
-        
-        <el-sub-menu index="functional-test">
-          <template #title>
-            <el-icon><Document /></el-icon>
-            <span>功能测试</span>
-          </template>
-          <el-menu-item index="/functional-test/products">
-            <el-icon><Box /></el-icon>
-            <template #title>产品管理</template>
-          </el-menu-item>
-          <el-menu-item index="/functional-test/test-cases">
-            <el-icon><List /></el-icon>
-            <template #title>用例管理</template>
-          </el-menu-item>
-          <el-menu-item index="/functional-test/tasks">
-            <el-icon><Timer /></el-icon>
-            <template #title>任务管理</template>
-          </el-menu-item>
-        </el-sub-menu>
-        
-        <el-sub-menu index="special-test">
-          <template #title>
-            <el-icon><Setting /></el-icon>
-            <span>专项测试</span>
-          </template>
-          <el-menu-item index="/special-test/automation">
-            <el-icon><Lightning /></el-icon>
-            <template #title>自动化测试</template>
-          </el-menu-item>
-          <el-menu-item index="/special-test/performance">
-            <el-icon><Odometer /></el-icon>
-            <template #title>性能测试</template>
-          </el-menu-item>
-        </el-sub-menu>
 
         <el-sub-menu index="toolbox">
           <template #title>
@@ -123,12 +89,6 @@ import {
   Fold,
   Expand,
   Document,
-  List,
-  Timer,
-  Setting,
-  Odometer,
-  Lightning,
-  Box,
   SetUp
 } from '@element-plus/icons-vue'
 
@@ -139,12 +99,6 @@ export default {
     Fold,
     Expand,
     Document,
-    List,
-    Timer,
-    Setting,
-    Odometer,
-    Lightning,
-    Box,
     SetUp
   },
   setup() {
@@ -166,11 +120,6 @@ export default {
       const titleMap = {
         '/devices': '设备管理',
         '/devices/connection': '设备连接信息',
-        '/functional-test/test-cases': '用例管理',
-        '/functional-test/products': '产品管理',
-        '/functional-test/tasks': '任务管理',
-        '/special-test/automation': '自动化测试',
-        '/special-test/performance': '性能测试',
         '/toolbox/testgen': '用例生成'
       }
       if (route.path.startsWith('/toolbox/testgen/')) return '用例生成工作区'

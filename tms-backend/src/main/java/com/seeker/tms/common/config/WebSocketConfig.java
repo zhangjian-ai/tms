@@ -1,6 +1,9 @@
-package com.seeker.tms.websocket;
+package com.seeker.tms.common.config;
 
+import com.seeker.tms.biz.device.websocket.DeviceHoldHandler;
+import com.seeker.tms.biz.device.websocket.DeviceSyncHandler;
 import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
+
 import lombok.AllArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;

@@ -1,14 +1,14 @@
-package com.seeker.tms.websocket;
+package com.seeker.tms.biz.device.websocket;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.baomidou.mybatisplus.extension.toolkit.Db;
 import com.seeker.tms.biz.device.entities.DeviceConnectionPO;
 import com.seeker.tms.biz.device.entities.DevicePO;
 import com.seeker.tms.common.config.RedisConfig;
 import com.seeker.tms.common.enums.DeviceSys;
-import com.baomidou.mybatisplus.extension.toolkit.Db;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
