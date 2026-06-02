@@ -28,6 +28,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 @Slf4j
@@ -37,6 +41,8 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     private static final int MAX_IMAGE_SIZE = 512 * 1024;
     private static final String IMG_PLACEHOLDER = "___IMAGE_PLACEHOLDER_%d___";
+    /** 图片识别并发度：vision API 通常按账号有 RPS 限制，4 是稳妥起点 */
+    private static final int IMAGE_RECOGNIZE_CONCURRENCY = 4;
 
     private final LlmProperties llmProperties;
 
@@ -130,39 +136,79 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     // ---- 图片识别并回填占位符 ----
     private String recognizeAndFillBack(String text, List<byte[]> pictures, BiConsumer<Integer, String> progressCallback) {
-        for (int i = 0; i < pictures.size(); i++) {
-            String placeholder = String.format(IMG_PLACEHOLDER, i + 1);
-            if (!text.contains(placeholder)) continue;
+        // 固定一份原始文本作为所有图片的上下文，避免上一张的识别结果污染下一张
+        final String originalText = text;
+        final int total = pictures.size();
 
-            if (progressCallback != null) {
-                int imgProgress = 40 + (int) ((i + 1) * 60.0 / pictures.size());
-                progressCallback.accept(imgProgress, "正在识别第 " + (i + 1) + "/" + pictures.size() + " 张图片...");
+        // 单次构造 vision model，复用底层连接池
+        OpenAiChatModel visionModel = buildVisionModel();
+        String systemPrompt = PromptLoader.load("image_recognize_system");
+
+        ExecutorService pool = Executors.newFixedThreadPool(
+                Math.min(IMAGE_RECOGNIZE_CONCURRENCY, Math.max(1, total)),
+                r -> {
+                    Thread t = new Thread(r, "img-recognize");
+                    t.setDaemon(true);
+                    return t;
+                });
+        AtomicInteger done = new AtomicInteger(0);
+
+        try {
+            List<CompletableFuture<int[]>> futures = new ArrayList<>(total);
+            String[] descriptions = new String[total];
+            for (int i = 0; i < total; i++) {
+                final int idx = i;
+                String placeholder = String.format(IMG_PLACEHOLDER, i + 1);
+                if (!originalText.contains(placeholder)) {
+                    descriptions[i] = null;
+                    continue;
+                }
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    String desc = recognizeOneImage(visionModel, systemPrompt,
+                            pictures.get(idx), idx + 1, originalText);
+                    descriptions[idx] = desc;
+                    int finished = done.incrementAndGet();
+                    if (progressCallback != null) {
+                        int imgProgress = 40 + (int) (finished * 60.0 / total);
+                        progressCallback.accept(imgProgress,
+                                "已完成 " + finished + "/" + total + " 张图片识别");
+                    }
+                    return new int[]{idx};
+                }, pool));
             }
+            // 等全部完成（单张异常已在 recognizeOneImage 内部兜底，不会让整批失败）
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-            // 传入完整文档和图片序号，让模型自己理解上下文
-            String desc = recognizeImageWithFullDoc(pictures.get(i), i + 1, text);
-            text = text.replace(placeholder, desc);
+            // 统一回填——基于原始文本一次性 replace，避免线性 N 次扫描
+            String result = originalText;
+            for (int i = 0; i < total; i++) {
+                if (descriptions[i] == null) continue;
+                result = result.replace(String.format(IMG_PLACEHOLDER, i + 1), descriptions[i]);
+            }
+            return result;
+        } finally {
+            pool.shutdown();
         }
-        return text;
     }
 
-    private String recognizeImageWithFullDoc(byte[] imageBytes, int index, String fullDoc) {
+    private OpenAiChatModel buildVisionModel() {
+        LlmProperties.ModelConfig visionCfg = llmProperties.getVision();
+        return OpenAiChatModel.builder()
+                .apiKey(visionCfg.getApiKey())
+                .baseUrl(visionCfg.getBaseUrl())
+                .modelName(visionCfg.getModel())
+                .maxTokens(2048)
+                .timeout(Duration.ofSeconds(180))
+                .build();
+    }
+
+    private String recognizeOneImage(OpenAiChatModel visionModel, String systemPrompt,
+                                     byte[] imageBytes, int index, String fullDoc) {
         try {
             byte[] compressed = compressImage(imageBytes);
-
-            LlmProperties.ModelConfig visionCfg = llmProperties.getVision();
-            OpenAiChatModel visionModel = OpenAiChatModel.builder()
-                    .apiKey(visionCfg.getApiKey())
-                    .baseUrl(visionCfg.getBaseUrl())
-                    .modelName(visionCfg.getModel())
-                    .maxTokens(2048)
-                    .timeout(Duration.ofSeconds(60))
-                    .build();
-
             String base64 = Base64.getEncoder().encodeToString(compressed);
             String mimeType = detectMimeType(compressed);
 
-            String systemPrompt = PromptLoader.load("image_recognize_system");
             String userPrompt = PromptLoader.loadWithParams("image_recognize_user",
                     Map.of("index", String.valueOf(index), "doc", fullDoc));
 
@@ -177,7 +223,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             ));
             return response.content().text();
         } catch (Exception e) {
-            log.warn("图片识别失败", e);
+            log.warn("图片识别失败，index={}", index, e);
             return "[图片内容无法识别]";
         }
     }

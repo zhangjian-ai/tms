@@ -11,6 +11,8 @@ public interface TestGenService {
     XMindNode getXMindData(Integer taskId);
     void saveXMindData(Integer taskId, XMindNode root);
     void generatePoints(Integer taskId);
+    void confirmPlan(Integer taskId, OutlineVO outline);
+    OutlineVO getOutline(Integer taskId);
     void generateCasesForPoint(Integer taskId, String pointId);
     String finishTask(Integer taskId);
     void regenerateTask(Integer taskId);

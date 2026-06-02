@@ -19,6 +19,12 @@ export const testgenApi = {
   generatePoints(taskId) {
     return api.post(`/testgen/task/${taskId}/points`)
   },
+  confirmPlan(taskId, outline) {
+    return api.post(`/testgen/task/${taskId}/confirm-plan`, outline)
+  },
+  getOutline(taskId) {
+    return api.get(`/testgen/task/${taskId}/outline`)
+  },
   generateCasesForPoint(taskId, pointId) {
     return api.post(`/testgen/task/${taskId}/point/${pointId}/generate`)
   },

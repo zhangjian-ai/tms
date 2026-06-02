@@ -7,6 +7,8 @@ import lombok.Getter;
 @AllArgsConstructor
 public enum TaskStatus {
     NEW("NEW", "新建"),
+    PLANNING("PLANNING", "规划中"),
+    PLAN_REVIEW("PLAN_REVIEW", "等待大纲确认"),
     GENERATING("GENERATING", "生成中"),
     EDITING("EDITING", "编辑中"),
     FINISHED("FINISHED", "已完成"),

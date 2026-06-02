@@ -1,0 +1,9 @@
+## 当前模块
+- 名称: {{moduleName}}
+- 内容摘要: {{moduleScope}}
+
+## 全局摘要
+{{summary}}
+
+## 需求文档
+{{doc}}

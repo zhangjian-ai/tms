@@ -31,12 +31,20 @@
             开始生成
           </el-button>
           <el-button
-            v-if="row.status === 'GENERATING'"
+            v-if="row.status === 'GENERATING' || row.status === 'PLANNING'"
             size="small"
             type="primary"
             @click="continueGen(row)"
           >
             继续生成
+          </el-button>
+          <el-button
+            v-if="row.status === 'PLAN_REVIEW'"
+            size="small"
+            type="primary"
+            @click="continueGen(row)"
+          >
+            确认大纲
           </el-button>
           <el-button
             v-if="row.status === 'EDITING'"
@@ -129,8 +137,24 @@ export default {
       prdName: [{ required: true, message: '请上传需求文档', trigger: 'change' }]
     }
 
-    const statusTextMap = { NEW: '新建', GENERATING: '生成中', EDITING: '编辑中', FINISHED: '已完成', FAILED: '失败' }
-    const statusTypeMap = { NEW: 'info', GENERATING: 'warning', EDITING: 'info', FINISHED: 'success', FAILED: 'danger' }
+    const statusTextMap = {
+      NEW: '新建',
+      PLANNING: '规划中',
+      PLAN_REVIEW: '待确认',
+      GENERATING: '生成中',
+      EDITING: '编辑中',
+      FINISHED: '已完成',
+      FAILED: '失败'
+    }
+    const statusTypeMap = {
+      NEW: 'info',
+      PLANNING: 'warning',
+      PLAN_REVIEW: 'warning',
+      GENERATING: 'warning',
+      EDITING: 'info',
+      FINISHED: 'success',
+      FAILED: 'danger'
+    }
     const prdTypeMap = { BIZ: '业务需求', BURY: '埋点需求', API: '接口需求' }
 
     const formatDateTime = (val) => {

@@ -2,6 +2,7 @@ package com.seeker.tms.common.config;
 
 import com.seeker.tms.biz.device.websocket.DeviceHoldHandler;
 import com.seeker.tms.biz.device.websocket.DeviceSyncHandler;
+import com.seeker.tms.biz.testgen.websocket.TestGenAuthHandshakeInterceptor;
 import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
 
 import lombok.AllArgsConstructor;
@@ -25,7 +26,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(deviceSyncHandler, "/ws/device/sync")
                 .addHandler(deviceHoldHandler, "/ws/device/hold")
-                .addHandler(testGenWebSocketHandler, "/ws/testgen/*")
+                .setAllowedOrigins("*");
+
+        registry.addHandler(testGenWebSocketHandler, "/ws/testgen/*")
+                .addInterceptors(new TestGenAuthHandshakeInterceptor())
                 .setAllowedOrigins("*");
     }
 }

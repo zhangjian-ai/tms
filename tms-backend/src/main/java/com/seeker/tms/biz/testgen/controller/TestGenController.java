@@ -66,6 +66,20 @@ public class TestGenController {
         return Result.success();
     }
 
+    @ApiOperation("确认大纲并触发测试点提取")
+    @PostMapping("/task/{taskId}/confirm-plan")
+    public Result<?> confirmPlan(@PathVariable Integer taskId,
+                                 @RequestBody(required = false) OutlineVO outline) {
+        testGenService.confirmPlan(taskId, outline);
+        return Result.success();
+    }
+
+    @ApiOperation("获取当前大纲")
+    @GetMapping("/task/{taskId}/outline")
+    public Result<OutlineVO> getOutline(@PathVariable Integer taskId) {
+        return Result.success(testGenService.getOutline(taskId));
+    }
+
     @ApiOperation("单个测试点生成用例")
     @PostMapping("/task/{taskId}/point/{pointId}/generate")
     public Result<?> generateCasesForPoint(@PathVariable Integer taskId,

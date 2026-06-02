@@ -33,7 +33,10 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 @Service
@@ -43,6 +46,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
     private static final String REDIS_KEY_XMIND = "testgen:task:%d:xmind";
     private static final String REDIS_KEY_CHAT = "testgen:task:%d:chat";
+    private static final String REDIS_KEY_OUTLINE = "testgen:task:%d:outline";
     private static final int REDIS_EXPIRE_HOURS = 72;
     private static final int MAX_DOC_CHARS = 800000;
 
@@ -133,51 +137,521 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         if (task == null) return;
 
         try {
-            // 1. 开始生成前：只记录任务状态
-            updateStatus(taskId, TaskStatus.GENERATING.getCode(), "正在下载需求文档...");
+            // 阶段 A：规划
+            updateStatus(taskId, TaskStatus.PLANNING.getCode(), "正在下载并解析需求文档...");
+            TestGenWebSocketHandler.sendTaskStatus(wsKey,
+                    TaskStatus.PLANNING.getCode(), "正在下载并解析需求文档...");
+            TestGenWebSocketHandler.sendPhaseChanged(wsKey, "PLANNING", "正在下载并解析需求文档...");
             TestGenWebSocketHandler.sendProgress(wsKey, "正在下载需求文档...");
 
             String docText = fetchDocText(taskId, task.getPrdName(), wsKey);
 
-            updateStatus(taskId, TaskStatus.GENERATING.getCode(), "正在提取测试点...");
-            TestGenWebSocketHandler.sendProgress(wsKey, "正在提取测试点...");
+            updateStatus(taskId, TaskStatus.PLANNING.getCode(), "正在生成需求章节摘要...");
+            TestGenWebSocketHandler.sendProgress(wsKey, "正在生成需求章节摘要...");
 
-            // 2. 初始化根节点，放入内存缓存
+            OutlineVO outline = callPlanningAgent(truncateDocText(docText));
+
+            // 暂存大纲并通知前端
+            saveOutline(taskId, outline);
+            updateStatus(taskId, TaskStatus.PLAN_REVIEW.getCode(), "章节摘要已生成，等待确认");
+            TestGenWebSocketHandler.sendPhaseChanged(wsKey, "PLAN_REVIEW", "请确认或调整需求章节大纲");
+            TestGenWebSocketHandler.sendPlanDrafted(wsKey, outline);
+            TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.PLAN_REVIEW.getCode(), "章节摘要已生成，等待确认");
+        } catch (Exception e) {
+            log.error("生成大纲失败，taskId={}", taskId, e);
+            updateStatus(taskId, TaskStatus.FAILED.getCode(), "失败：" + e.getMessage());
+            TestGenWebSocketHandler.sendError(wsKey, e.getMessage());
+        }
+    }
+
+    @Override
+    public OutlineVO getOutline(Integer taskId) {
+        String key = String.format(REDIS_KEY_OUTLINE, taskId);
+        String json = redisTemplate.opsForValue().get(key);
+        if (json == null || json.isBlank()) return null;
+        return JSON.parseObject(json, OutlineVO.class);
+    }
+
+    private void saveOutline(Integer taskId, OutlineVO outline) {
+        String key = String.format(REDIS_KEY_OUTLINE, taskId);
+        redisTemplate.opsForValue().set(key, JSON.toJSONString(outline), REDIS_EXPIRE_HOURS, TimeUnit.HOURS);
+    }
+
+    @Override
+    @Async("taskExecutor")
+    public void confirmPlan(Integer taskId, OutlineVO outline) {
+        String wsKey = String.valueOf(taskId);
+        TestGenTaskPO task = taskMapper.selectById(taskId);
+        if (task == null) return;
+
+        // 用户可能调整过大纲，以传入为准；空则走暂存版本
+        OutlineVO effective = outline != null ? outline : getOutline(taskId);
+        if (effective == null || effective.getModules() == null || effective.getModules().isEmpty()) {
+            TestGenWebSocketHandler.sendError(wsKey, "大纲为空，请先生成或填写模块");
+            // 还原状态，避免前端因预设 GENERATING 而卡在遮罩
+            TestGenWebSocketHandler.sendTaskStatus(wsKey,
+                    TaskStatus.PLAN_REVIEW.getCode(), "大纲为空，请先生成或填写模块");
+            return;
+        }
+        saveOutline(taskId, effective);
+
+        try {
+            updateStatus(taskId, TaskStatus.GENERATING.getCode(), "正在按章节提取测试点...");
+            TestGenWebSocketHandler.sendTaskStatus(wsKey,
+                    TaskStatus.GENERATING.getCode(), "正在按章节提取测试点...");
+            TestGenWebSocketHandler.sendPhaseChanged(wsKey, "EXTRACTING", "正在按章节提取测试点...");
+
+            String docText = fetchDocText(taskId, task.getPrdName(), wsKey);
+            String truncatedDoc = truncateDocText(docText);
+            String summary = effective.getSummary() == null ? "" : effective.getSummary();
+
+            // 初始化根节点
             XMindNode root = newNode("root", buildRootTitle(task.getPrdName()), "root");
             generatingTasks.put(taskId, root);
 
-            // 3. 生成过程中：只在内存中累积，实时推送给前端
-            callLlmStreaming(
-                    buildPointExtractSystem(),
-                    PromptLoader.loadWithParams("point_extract_user", Map.of(
-                            "doc", truncateDocText(docText)
-                    )),
-                    (jsonObj) -> {
-                        try {
-                            addPointToTree(root, jsonObj);
-                            // 不保存到 Redis，只推送给前端
-                            TestGenWebSocketHandler.sendPointsGenerated(wsKey, root);
-                        } catch (Exception ex) {
-                            log.warn("处理单个测试点失败，跳过", ex);
-                        }
-                    }
-            );
+            List<OutlineVO.ModuleNode> modules = effective.getModules();
+            int total = modules.size();
+            int failed = parallelExtractModules(wsKey, taskId, root, modules, summary, truncatedDoc);
 
-            // 4. 生成完成后：一次性保存到 Redis，并从内存缓存中移除
             int pointCount = countNodes(root, "point");
             saveXMindData(taskId, root);
-            generatingTasks.remove(taskId);
 
-            updateStatus(taskId, TaskStatus.EDITING.getCode(), "测试点生成完成，共 " + pointCount + " 个");
-            TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.EDITING.getCode(), "测试点生成完成，共 " + pointCount + " 个");
+            String extractDoneMsg = "测试点提取完成，共 " + pointCount + " 个"
+                    + (failed > 0 ? "（" + failed + " 个模块失败）" : "");
+            log.info("taskId={} 测试点提取完成，共 {} 个", taskId, pointCount);
+            updateStatus(taskId, TaskStatus.GENERATING.getCode(), extractDoneMsg);
+            TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.GENERATING.getCode(), extractDoneMsg);
+            TestGenWebSocketHandler.sendProgress(wsKey, extractDoneMsg);
             TestGenWebSocketHandler.sendPointsGenerated(wsKey, root);
 
+            // 阶段 B-2：自动反思（去重 + 补漏），完成后再推一次树
+            try {
+                refinePoints(taskId, wsKey, effective, truncatedDoc);
+            } catch (Exception ex) {
+                log.warn("taskId={} 自动反思失败，跳过精修，直接进入用例生成阶段", taskId, ex);
+                TestGenWebSocketHandler.sendProgress(wsKey, "自动精修失败，跳过：" + ex.getMessage());
+            }
+
+            XMindNode refinedRoot = getXMindData(taskId);
+            int refinedPointCount = refinedRoot != null ? countNodes(refinedRoot, "point") : pointCount;
+            String autoCaseMsg = "测试点精修完成，共 " + refinedPointCount + " 个，开始自动生成用例";
+            updateStatus(taskId, TaskStatus.GENERATING.getCode(), autoCaseMsg);
+            TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.GENERATING.getCode(), autoCaseMsg);
+            TestGenWebSocketHandler.sendPhaseChanged(wsKey, "GENERATING_CASES", autoCaseMsg);
+            TestGenWebSocketHandler.sendProgress(wsKey, autoCaseMsg);
+            if (refinedRoot != null) {
+                TestGenWebSocketHandler.sendPointsGenerated(wsKey, refinedRoot);
+            }
+
+            // 阶段 C：并发为每个 point 生成用例，完成后折叠为模块下的用例
+            autoGenerateCasesForAllPoints(taskId);
+            log.info("taskId={} 自动生成用例阶段完成", taskId);
+
+            // 重新读取最终树
+            XMindNode finalRoot = getXMindData(taskId);
+            generatingTasks.remove(taskId);
+
+            int caseCount = finalRoot != null ? countNodes(finalRoot, "case") : 0;
+            int failedPoints = finalRoot != null ? countFailedPoints(finalRoot) : 0;
+            String doneMsg = "用例生成完成，共 " + caseCount + " 条用例"
+                    + (failedPoints > 0 ? "（" + failedPoints + " 个测试点失败，可右键单独重试）" : "");
+            updateStatus(taskId, TaskStatus.EDITING.getCode(), doneMsg);
+            TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.EDITING.getCode(), doneMsg);
+            TestGenWebSocketHandler.sendPointsGenerated(wsKey, finalRoot);
+            TestGenWebSocketHandler.sendPhaseChanged(wsKey, "EDITING", "用例生成完成");
         } catch (Exception e) {
-            log.error("生成测试点失败，taskId={}", taskId, e);
+            log.error("提取测试点失败，taskId={}", taskId, e);
             generatingTasks.remove(taskId);
             updateStatus(taskId, TaskStatus.FAILED.getCode(), "失败：" + e.getMessage());
             TestGenWebSocketHandler.sendError(wsKey, e.getMessage());
         }
+    }
+
+    /**
+     * 并发为当前任务下所有 point 节点生成用例，完成后自动折叠。
+     * 失败的 point 节点保留并标记 failed，由用户手动重试。
+     */
+    private void autoGenerateCasesForAllPoints(Integer taskId) {
+        XMindNode root = getXMindData(taskId);
+        if (root == null) return;
+        List<String> pointIds = new ArrayList<>();
+        collectPointIds(root, pointIds);
+        if (pointIds.isEmpty()) return;
+
+        String wsKey = String.valueOf(taskId);
+        int total = pointIds.size();
+        TestGenWebSocketHandler.sendProgress(wsKey, "开始并发生成用例，共 " + total + " 个测试点...");
+
+        int concurrency = Math.min(4, Math.max(1, total));
+        ExecutorService pool = Executors.newFixedThreadPool(concurrency, r -> {
+            Thread t = new Thread(r, "case-gen-" + taskId);
+            t.setDaemon(true);
+            return t;
+        });
+        AtomicInteger done = new AtomicInteger(0);
+        AtomicInteger ok = new AtomicInteger(0);
+        AtomicInteger fail = new AtomicInteger(0);
+        try {
+            List<CompletableFuture<Void>> futures = new ArrayList<>(total);
+            for (String pid : pointIds) {
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        generateCasesForPointInternal(taskId, pid);
+                        ok.incrementAndGet();
+                    } catch (Exception ex) {
+                        fail.incrementAndGet();
+                        log.warn("用例生成任务异常 taskId={} pointId={}", taskId, pid, ex);
+                    } finally {
+                        int finished = done.incrementAndGet();
+                        TestGenWebSocketHandler.sendProgress(wsKey,
+                                "已完成 " + finished + "/" + total + " 个测试点的用例生成");
+                    }
+                }, pool));
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            TestGenWebSocketHandler.sendProgress(wsKey,
+                    "用例生成阶段完成：成功 " + ok.get() + " 个，失败 " + fail.get() + " 个"
+                            + (fail.get() > 0 ? "（失败的测试点已标记，可在面板上右键单独重试）" : ""));
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    private void collectPointIds(XMindNode node, List<String> out) {
+        if (node == null) return;
+        if ("point".equals(node.getType())) {
+            out.add(node.getId());
+            return; // point 下不再递归
+        }
+        if (node.getChildren() != null) {
+            for (XMindNode child : node.getChildren()) collectPointIds(child, out);
+        }
+    }
+
+    /**
+     * 并发为大纲中的每个模块抽取测试点；写树通过 taskLock 保证线程安全。
+     * 返回失败模块数。
+     */
+    private int parallelExtractModules(String wsKey, Integer taskId, XMindNode root,
+                                       List<OutlineVO.ModuleNode> modules,
+                                       String summary, String docText) {
+        // 过滤空模块名，并保留原索引用于进度文案
+        List<OutlineVO.ModuleNode> effective = new ArrayList<>();
+        for (OutlineVO.ModuleNode m : modules) {
+            String n = m.getName() == null ? "" : m.getName().trim();
+            if (!n.isEmpty()) effective.add(m);
+        }
+        int total = effective.size();
+        if (total == 0) return 0;
+
+        TestGenWebSocketHandler.sendProgress(wsKey, "开始并发提取测试点，共 " + total + " 个章节...");
+
+        int concurrency = Math.min(4, Math.max(1, total));
+        ExecutorService pool = Executors.newFixedThreadPool(concurrency, r -> {
+            Thread t = new Thread(r, "module-extract-" + taskId);
+            t.setDaemon(true);
+            return t;
+        });
+        AtomicInteger done = new AtomicInteger(0);
+        AtomicInteger failedCnt = new AtomicInteger(0);
+        try {
+            List<CompletableFuture<Void>> futures = new ArrayList<>(total);
+            for (OutlineVO.ModuleNode m : effective) {
+                futures.add(CompletableFuture.runAsync(() -> {
+                    String moduleName = m.getName().trim();
+                    try {
+                        extractModulePoints(wsKey, taskId, root, m, summary, docText);
+                    } catch (Exception ex) {
+                        failedCnt.incrementAndGet();
+                        log.warn("章节 [{}] 提取失败，继续其他模块", moduleName, ex);
+                        TestGenWebSocketHandler.sendProgress(wsKey,
+                                "模块 " + moduleName + " 提取失败：" + ex.getMessage());
+                    } finally {
+                        int finished = done.incrementAndGet();
+                        TestGenWebSocketHandler.sendProgress(wsKey,
+                                "已完成 " + finished + "/" + total + " 个章节的测试点提取");
+                    }
+                }, pool));
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } finally {
+            pool.shutdown();
+        }
+        return failedCnt.get();
+    }
+
+    /** 单模块提取：流式调用，每解析出一个测试点立即挂树并推送 */
+    private void extractModulePoints(String wsKey, Integer taskId, XMindNode root,
+                                     OutlineVO.ModuleNode module,
+                                     String summary, String docText) {
+        String moduleName = module.getName() == null ? "" : module.getName().trim();
+        String moduleScope = module.getScope() == null ? "" : module.getScope();
+
+        Map<String, String> params = new HashMap<>();
+        params.put("moduleName", moduleName);
+        params.put("moduleScope", moduleScope);
+        params.put("summary", summary);
+        params.put("doc", docText);
+
+        Object lock = getTaskLock(taskId);
+        callLlmStreaming(
+                PromptLoader.load("extract_module_system"),
+                PromptLoader.loadWithParams("extract_module_user", params),
+                (jsonObj) -> {
+                    try {
+                        synchronized (lock) {
+                            String newPointId = addPointToTree(root, jsonObj);
+                            TestGenWebSocketHandler.sendPointAdded(wsKey, root, newPointId);
+                        }
+                    } catch (Exception ex) {
+                        log.warn("处理章节[{}]单个测试点失败，跳过", moduleName, ex);
+                    }
+                }
+        );
+    }
+
+    /**
+     * 调用规划 Agent，期望返回单个 OutlineVO 形态的 JSON 对象。
+     */
+    private OutlineVO callPlanningAgent(String docText) {
+        String system = PromptLoader.load("planning_system");
+        String user = PromptLoader.loadWithParams("planning_user", Map.of("doc", docText));
+        String response = runStreamingToString(system, user, 300, 0.5);
+        return parseOutlineResponse(response);
+    }
+
+    /** 容错地从模型回复中提取首个完整 JSON 对象并解析为 OutlineVO */
+    private OutlineVO parseOutlineResponse(String text) {
+        if (text == null || text.isBlank()) {
+            throw new RuntimeException("规划返回为空");
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            throw new RuntimeException("规划返回不是合法 JSON：" + text);
+        }
+        String json = text.substring(start, end + 1);
+        try {
+            return JSON.parseObject(json, OutlineVO.class);
+        } catch (Exception e) {
+            throw new RuntimeException("规划返回解析失败：" + json, e);
+        }
+    }
+
+    // ---- 自动精修测试点（去重 + 补漏） ----
+
+    /**
+     * 测试点提取完成后、自动生成用例之前调用一次。
+     * 让 LLM 比对当前测试点清单与原始文档，剔除重复并补齐漏点。
+     * 补出来的"漏点"必须严格满足测试点提取协议（type/module/content），
+     * 直接复用 addPointToTree 落树。失败仅记日志，不阻断主流程。
+     */
+    private void refinePoints(Integer taskId, String wsKey,
+                              OutlineVO outline, String truncatedDoc) {
+        XMindNode root = getXMindData(taskId);
+        if (root == null) return;
+
+        List<Map<String, String>> points = collectPointsFull(root);
+        if (points.isEmpty()) {
+            log.info("taskId={} 现有测试点为空，跳过自动精修", taskId);
+            return;
+        }
+
+        TestGenWebSocketHandler.sendPhaseChanged(wsKey, "REFINING", "AI 正在精修测试点（去重 + 补漏）...");
+        TestGenWebSocketHandler.sendProgress(wsKey, "AI 正在精修测试点（去重 + 补漏）...");
+
+        String summary = (outline != null && outline.getSummary() != null) ? outline.getSummary() : "";
+        Map<String, String> params = new HashMap<>();
+        params.put("summary", summary);
+        params.put("points", JSON.toJSONString(points));
+        params.put("doc", truncatedDoc);
+
+        String response = callLlmBlocking(
+                PromptLoader.load("refine_points_system"),
+                PromptLoader.loadWithParams("refine_points_user", params));
+        JSONObject result = parseRefineResponse(response);
+        if (result == null) {
+            log.warn("taskId={} 自动精修返回解析失败，跳过", taskId);
+            return;
+        }
+
+        Object lock = getTaskLock(taskId);
+        synchronized (lock) {
+            XMindNode current = getXMindData(taskId);
+            if (current == null) return;
+            int removed = applyDuplicateRemovals(current, result.getJSONArray("duplicateGroups"));
+            int added = applyAdditions(current, result.getJSONArray("additions"));
+            saveXMindData(taskId, current);
+            String msg = "测试点精修：去重 " + removed + " 条，补齐 " + added + " 条";
+            log.info("taskId={} {}", taskId, msg);
+            TestGenWebSocketHandler.sendProgress(wsKey, msg);
+        }
+    }
+
+    /** 收集所有 point 节点的 id/type/module/content 视图，给精修 agent 使用 */
+    private List<Map<String, String>> collectPointsFull(XMindNode root) {
+        List<Map<String, String>> list = new ArrayList<>();
+        collectPointsFullRecursive(root, root, list);
+        return list;
+    }
+
+    private void collectPointsFullRecursive(XMindNode root, XMindNode node, List<Map<String, String>> list) {
+        if (node == null) return;
+        if ("point".equals(node.getType())) {
+            String modulePath = buildModulePath(root, node);
+            String[] parts = modulePath.split("-", 2);
+            String type = parts.length > 0 ? parts[0] : "功能逻辑";
+            String module = parts.length > 1 ? parts[1] : "";
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("id", node.getId());
+            m.put("type", type);
+            m.put("module", module);
+            m.put("content", node.getTitle());
+            list.add(m);
+            return; // point 下不再递归
+        }
+        if (node.getChildren() != null) {
+            for (XMindNode child : node.getChildren()) {
+                collectPointsFullRecursive(root, child, list);
+            }
+        }
+    }
+
+    private JSONObject parseRefineResponse(String text) {
+        if (text == null || text.isBlank()) return null;
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            log.warn("自动精修返回非法 JSON 对象：{}", text);
+            return null;
+        }
+        try {
+            return JSON.parseObject(text.substring(start, end + 1));
+        } catch (Exception e) {
+            log.warn("自动精修返回解析失败：{}", text, e);
+            return null;
+        }
+    }
+
+    private int applyDuplicateRemovals(XMindNode root, JSONArray groups) {
+        if (groups == null || groups.isEmpty()) return 0;
+        Set<String> existingIds = new HashSet<>();
+        List<String> tmp = new ArrayList<>();
+        collectPointIds(root, tmp);
+        existingIds.addAll(tmp);
+        int removed = 0;
+        for (int i = 0; i < groups.size(); i++) {
+            JSONObject g = groups.getJSONObject(i);
+            JSONArray toRemove = g.getJSONArray("removeIds");
+            String keepId = g.getString("keepId");
+            if (toRemove == null) continue;
+            for (int j = 0; j < toRemove.size(); j++) {
+                String rid = toRemove.getString(j);
+                if (rid == null || rid.isBlank()) continue;
+                if (rid.equals(keepId)) continue; // 防御：keep 与 remove 撞 id 时不删
+                if (!existingIds.contains(rid)) continue;
+                if (removeNodeById(root, rid)) {
+                    removed++;
+                    existingIds.remove(rid);
+                }
+            }
+        }
+        return removed;
+    }
+
+    private int applyAdditions(XMindNode root, JSONArray additions) {
+        if (additions == null || additions.isEmpty()) return 0;
+        // 收集允许的模块/子模块标题，用于校验 module 字段是否落在大纲内
+        Set<String> allowedModuleTitles = new HashSet<>();
+        collectModuleTitles(root, allowedModuleTitles);
+        Set<String> allowedTypes = Set.of("功能逻辑", "美术效果", "配置管理", "数据埋点", "异常边界");
+        int added = 0;
+        for (int i = 0; i < additions.size(); i++) {
+            JSONObject a = additions.getJSONObject(i);
+            String type = a.getString("type");
+            String module = a.getString("module");
+            String content = a.getString("content");
+            if (type == null || !allowedTypes.contains(type)) continue;
+            if (module == null || module.isBlank()) continue;
+            if (content == null || content.isBlank()) continue;
+            // module 必须落在已存在的模块/子模块上
+            String[] layers = module.split("-");
+            String top = layers[0].trim();
+            if (!allowedModuleTitles.contains(top)) {
+                log.info("跳过越界漏点 module={}, content={}", module, content);
+                continue;
+            }
+            JSONObject pj = new JSONObject();
+            pj.put("type", type);
+            pj.put("module", module);
+            pj.put("content", content);
+            addPointToTree(root, pj);
+            added++;
+        }
+        return added;
+    }
+
+    private void collectModuleTitles(XMindNode node, Set<String> out) {
+        if (node == null) return;
+        if ("module".equals(node.getType())) out.add(node.getTitle());
+        if (node.getChildren() != null) {
+            for (XMindNode c : node.getChildren()) collectModuleTitles(c, out);
+        }
+    }
+
+    /** 递归在树中按 id 删除节点；删除成功返回 true */
+    private boolean removeNodeById(XMindNode node, String targetId) {
+        if (node == null || node.getChildren() == null) return false;
+        Iterator<XMindNode> it = node.getChildren().iterator();
+        while (it.hasNext()) {
+            XMindNode child = it.next();
+            if (targetId.equals(child.getId())) {
+                it.remove();
+                return true;
+            }
+            if (removeNodeById(child, targetId)) return true;
+        }
+        return false;
+    }
+
+    /** 阻塞式调 LLM 取完整文本（精修等阶段使用） */
+    private String callLlmBlocking(String system, String user) {
+        return runStreamingToString(system, user, 420, 0.5);
+    }
+
+    /**
+     * 用流式接口调 LLM 直到 onComplete，把所有 token 拼成最终字符串返回。
+     * 复用 thinking 模型配置；timeoutSec / temperature 由调用方按场景指定。
+     */
+    private String runStreamingToString(String system, String user, int timeoutSec, double temperature) {
+        LlmProperties.ModelConfig cfg = llmProperties.getThinking();
+        OpenAiStreamingChatModel streamingModel = OpenAiStreamingChatModel.builder()
+                .apiKey(cfg.getApiKey())
+                .baseUrl(cfg.getBaseUrl())
+                .modelName(cfg.getModel())
+                .timeout(Duration.ofSeconds(timeoutSec))
+                .temperature(temperature)
+                .build();
+
+        StringBuilder buffer = new StringBuilder();
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        streamingModel.generate(
+                List.of(
+                        dev.langchain4j.data.message.SystemMessage.from(system),
+                        dev.langchain4j.data.message.UserMessage.from(user)
+                ),
+                new StreamingResponseHandler<>() {
+                    @Override public void onNext(String token) { buffer.append(token); }
+                    @Override public void onComplete(Response<AiMessage> response) { future.complete(null); }
+                    @Override public void onError(Throwable error) { future.completeExceptionally(error); }
+                }
+        );
+        try {
+            future.get(timeoutSec, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            throw new RuntimeException("LLM 调用失败", e);
+        }
+        return buffer.toString();
     }
 
     // ---- 单测试点生成用例（流式） ----
@@ -185,8 +659,19 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     @Override
     @Async("taskExecutor")
     public void generateCasesForPoint(Integer taskId, String pointId) {
+        generateCasesForPointInternal(taskId, pointId);
+    }
+
+    /**
+     * 单个测试点生成用例的核心实现：拉用例 → 完成时 case 作为 point 子节点保留。
+     * 失败则在 point 上打 failed 图标，便于用户右键重试。
+     * 自动批量接力与用户手动触发都复用此方法（前者通过 autoGenerateCasesForAllPoints
+     * 直接同步调用以拿到完成时机，后者通过 @Async 包装的 generateCasesForPoint 异步调）。
+     */
+    private void generateCasesForPointInternal(Integer taskId, String pointId) {
         String wsKey = String.valueOf(taskId);
         Object lock = getTaskLock(taskId);
+        boolean success = false;
 
         // 注册生成中状态
         generatingPoints.computeIfAbsent(taskId, k -> ConcurrentHashMap.newKeySet()).add(pointId);
@@ -194,7 +679,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         try {
             TestGenTaskPO task = taskMapper.selectById(taskId);
 
-            // 在锁内读取树并清空该测试点的子节点
+            // 在锁内读取树并清空该测试点的子节点（兼容重试场景），同时清掉历史 failed 标记
             XMindNode pointNode;
             synchronized (lock) {
                 XMindNode root = getXMindData(taskId);
@@ -205,6 +690,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                     return;
                 }
                 pointNode.setChildren(new ArrayList<>());
+                pointNode.setIcons(null);
                 saveXMindData(taskId, root);
             }
 
@@ -212,14 +698,11 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             String pointTitle = pointNode.getTitle();
 
             // buildModulePath 需要 root，在锁内获取
-            // 现在路径已经包含完整层级：分类-模块1-模块2-...
             String modulePath;
             synchronized (lock) {
                 XMindNode root = getXMindData(taskId);
                 modulePath = buildModulePath(root, pointNode);
             }
-
-            // 从路径中提取分类（第一段）和模块路径（剩余部分）
             String[] pathParts = modulePath.split("-", 2);
             String type = pathParts.length > 0 ? pathParts[0] : "功能逻辑";
             String module = pathParts.length > 1 ? pathParts[1] : "";
@@ -229,13 +712,19 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             pointPayload.put("module", module);
             pointPayload.put("content", pointTitle);
 
-            callLlmStreaming(
-                    buildCaseGenSystem(),
-                    PromptLoader.loadWithParams("case_gen_user", Map.of(
-                            "doc", truncateDocText(docText),
-                            "points", JSON.toJSONString(pointPayload)
-                    )),
-                    (jsonObj) -> {
+            String system = buildCaseGenSystem();
+            String user = PromptLoader.loadWithParams("case_gen_user", Map.of(
+                    "doc", truncateDocText(docText),
+                    "points", JSON.toJSONString(pointPayload)
+            ));
+
+            // 失败重试 1 次：限流/瞬态网络抖动场景能自愈；流式调用结束但收 0 case 也算失败重试
+            int maxAttempts = 2;
+            Exception lastErr = null;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                int[] caseCount = new int[]{0};
+                try {
+                    callLlmStreaming(system, user, (jsonObj) -> {
                         try {
                             XMindNode caseNode = buildSingleCaseNode(jsonObj);
                             if (caseNode != null) {
@@ -245,6 +734,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                                     if (pn != null) {
                                         pn.getChildren().add(caseNode);
                                         saveXMindData(taskId, root);
+                                        caseCount[0]++;
                                         TestGenWebSocketHandler.sendPointCasesGenerated(wsKey, pointId, pn.getChildren(), false);
                                     }
                                 }
@@ -252,19 +742,60 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                         } catch (Exception ex) {
                             log.warn("处理单个用例失败，跳过", ex);
                         }
+                    });
+                    if (caseCount[0] > 0) {
+                        lastErr = null;
+                        break; // 成功
                     }
-            );
+                    lastErr = new RuntimeException("LLM 返回 0 条用例");
+                    log.warn("测试点 {} 第 {} 次生成 0 条用例，准备重试", pointId, attempt);
+                } catch (Exception ex) {
+                    lastErr = ex;
+                    log.warn("测试点 {} 第 {} 次生成失败：{}", pointId, attempt, ex.getMessage());
+                }
+                if (attempt < maxAttempts) {
+                    // 重试前清空已写入的部分用例，避免叠加
+                    synchronized (lock) {
+                        XMindNode root = getXMindData(taskId);
+                        XMindNode pn = root != null ? findNodeById(root, pointId) : null;
+                        if (pn != null) {
+                            pn.setChildren(new ArrayList<>());
+                            saveXMindData(taskId, root);
+                        }
+                    }
+                    try { Thread.sleep(1500); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                }
+            }
+            if (lastErr != null) {
+                throw new RuntimeException("用例生成最终失败：" + lastErr.getMessage(), lastErr);
+            }
 
-            // 生成完成
+            // 生成完成 → 保留 point 节点，case 作为其子节点（保持简单模型）
             synchronized (lock) {
                 XMindNode root = getXMindData(taskId);
-                XMindNode pn = findNodeById(root, pointId);
-                TestGenWebSocketHandler.sendPointCasesGenerated(wsKey, pointId,
-                        pn != null ? pn.getChildren() : List.of(), true);
+                if (root != null) {
+                    XMindNode pn = findNodeById(root, pointId);
+                    List<XMindNode> finalCases = (pn != null && pn.getChildren() != null)
+                            ? new ArrayList<>(pn.getChildren()) : List.of();
+                    saveXMindData(taskId, root);
+                    TestGenWebSocketHandler.sendPointCasesGenerated(wsKey, pointId, finalCases, true);
+                }
             }
+            success = true;
         } catch (Exception e) {
             log.error("单测试点生成用例失败, taskId={}, pointId={}", taskId, pointId, e);
-            // 单个测试点失败不标记任务失败，只发送错误通知
+            // 失败：保留 point 节点 + 标 failed 图标，让用户能识别并重试
+            synchronized (lock) {
+                XMindNode root = getXMindData(taskId);
+                if (root != null) {
+                    XMindNode pn = findNodeById(root, pointId);
+                    if (pn != null) {
+                        pn.setIcons(List.of("failed"));
+                        saveXMindData(taskId, root);
+                        TestGenWebSocketHandler.sendPointsGenerated(wsKey, root);
+                    }
+                }
+            }
             TestGenWebSocketHandler.sendError(wsKey, "测试点 " + pointId + " 生成失败: " + e.getMessage());
         } finally {
             Set<String> points = generatingPoints.get(taskId);
@@ -300,7 +831,10 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         // 清理 Redis 缓存
         String xmindKey = String.format(REDIS_KEY_XMIND, taskId);
         String chatKey = String.format(REDIS_KEY_CHAT, taskId);
-        redisTemplate.delete(List.of(xmindKey, chatKey));
+        String outlineKey = String.format(REDIS_KEY_OUTLINE, taskId);
+        redisTemplate.delete(List.of(xmindKey, chatKey, outlineKey));
+
+        TestGenWebSocketHandler.closeAllSessions(taskId.toString());
 
         return fileName;
     }
@@ -324,7 +858,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         taskLocks.remove(taskId);
         String xmindKey = String.format(REDIS_KEY_XMIND, taskId);
         String chatKey = String.format(REDIS_KEY_CHAT, taskId);
-        redisTemplate.delete(List.of(xmindKey, chatKey));
+        String outlineKey = String.format(REDIS_KEY_OUTLINE, taskId);
+        redisTemplate.delete(List.of(xmindKey, chatKey, outlineKey));
 
         TestGenTaskPO task = new TestGenTaskPO();
         task.setId(taskId);
@@ -333,6 +868,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         task.setXmindFileName(null);
         task.setUpdateTime(LocalDateTime.now());
         taskMapper.updateById(task);
+        // 不调用 closeAllSessions：发起 regenerate 的用户 ws 仍需用于接收新一轮推送
     }
 
     // ---- 恢复状态 ----
@@ -340,11 +876,26 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     @Override
     public RestoreVO restoreTask(Integer taskId) {
         RestoreVO vo = new RestoreVO();
-        vo.setTask(getTask(taskId));
+        TaskVO taskVO = getTask(taskId);
+        OutlineVO outline = getOutline(taskId);
+
+        // 兜底：任务停留在 PLAN_REVIEW 但 outline 已过期/丢失（Redis TTL 失效），
+        // 回退到 NEW 状态，让前端可重新发起生成；否则用户会看到一个无任何面板的空白工作区
+        if (taskVO != null
+                && TaskStatus.PLAN_REVIEW.getCode().equals(taskVO.getStatus())
+                && outline == null) {
+            log.warn("任务 {} 停留在 PLAN_REVIEW 但 outline 缺失，回退到 NEW", taskId);
+            updateStatus(taskId, TaskStatus.NEW.getCode(), "大纲已过期，请重新发起生成");
+            taskVO.setStatus(TaskStatus.NEW.getCode());
+            taskVO.setMessage("大纲已过期，请重新发起生成");
+        }
+
+        vo.setTask(taskVO);
         vo.setTreeData(getXMindData(taskId));
         vo.setChatHistory(agentChatService.getChatHistory(taskId));
         Set<String> points = generatingPoints.get(taskId);
         vo.setGeneratingPointIds(points != null ? new ArrayList<>(points) : List.of());
+        vo.setOutline(outline);
         return vo;
     }
 
@@ -370,8 +921,9 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         // 2. 清理 Redis 缓存
         String xmindKey = String.format(REDIS_KEY_XMIND, taskId);
         String chatKey = String.format(REDIS_KEY_CHAT, taskId);
-        redisTemplate.delete(List.of(xmindKey, chatKey));
-        log.info("已清理 Redis 缓存: {}, {}", xmindKey, chatKey);
+        String outlineKey = String.format(REDIS_KEY_OUTLINE, taskId);
+        redisTemplate.delete(List.of(xmindKey, chatKey, outlineKey));
+        log.info("已清理 Redis 缓存: taskId={}", taskId);
 
         // 3. 清理内存缓存
         generatingTasks.remove(taskId);
@@ -381,6 +933,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         // 4. 删除 MySQL 记录
         taskMapper.deleteById(taskId);
         log.info("已删除任务记录: taskId={}", taskId);
+
+        TestGenWebSocketHandler.closeAllSessions(taskId.toString());
     }
 
     // ============ 内部工具方法 ============
@@ -562,12 +1116,12 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         }
     }
 
-    /** 将单个测试点 JSON 添加到 XMind 树 */
-    private void addPointToTree(XMindNode root, JSONObject pointJson) {
+    /** 将单个测试点 JSON 添加到 XMind 树，返回新建 point 节点的 id（用于前端精确居中） */
+    private String addPointToTree(XMindNode root, JSONObject pointJson) {
         String module = pointJson.getString("module");
         String type = pointJson.getString("type");
         String content = pointJson.getString("content");
-        if (module == null || content == null) return;
+        if (module == null || content == null) return null;
 
         // 清理流式输出带来的换行符
         module = module.replaceAll("[\\n\\r]+", " ").trim();
@@ -603,9 +1157,10 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             targetNode = subNode;
         }
 
-        // 3. 创建测试点节点（不再在标题前加分类前缀）
+        // 3. 创建测试点节点
         XMindNode pointNode = newNode("point_" + UUID.randomUUID(), content, "point");
         targetNode.getChildren().add(pointNode);
+        return pointNode.getId();
     }
 
     /** 构建单个用例节点 */
@@ -625,7 +1180,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         }
         XMindNode caseNode = newNode("case_" + UUID.randomUUID(), caseName, "case");
         caseNode.setIcons(icons);
-        caseNode.setExpanded(false);
 
         List<XMindNode> children = new ArrayList<>();
         String pre = c.getString("前置条件");
@@ -687,6 +1241,21 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         if (node.getChildren() != null) {
             for (XMindNode child : node.getChildren()) {
                 count += countNodes(child, type);
+            }
+        }
+        return count;
+    }
+
+    /** 统计带 failed icon 标记的 point 节点数 */
+    private int countFailedPoints(XMindNode node) {
+        if (node == null) return 0;
+        int count = 0;
+        if ("point".equals(node.getType()) && node.getIcons() != null && node.getIcons().contains("failed")) {
+            count = 1;
+        }
+        if (node.getChildren() != null) {
+            for (XMindNode child : node.getChildren()) {
+                count += countFailedPoints(child);
             }
         }
         return count;
@@ -804,10 +1373,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         if (prdName == null || prdName.isBlank()) return "测试用例";
         int dotIndex = prdName.lastIndexOf('.');
         return dotIndex > 0 ? prdName.substring(0, dotIndex) : prdName;
-    }
-
-    private String buildPointExtractSystem() {
-        return PromptLoader.load("point_extract_system");
     }
 
     private String buildCaseGenSystem() {

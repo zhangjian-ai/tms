@@ -11,4 +11,6 @@ public class RestoreVO {
     private XMindNode treeData;
     private List<Map<String, String>> chatHistory;
     private List<String> generatingPointIds;
+    /** 当任务停留在 PLAN_REVIEW 阶段时，回传当前大纲，前端可恢复确认面板 */
+    private OutlineVO outline;
 }

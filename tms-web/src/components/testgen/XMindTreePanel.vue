@@ -1,19 +1,28 @@
 <template>
-  <div class="xmind-tree-panel">
+  <div class="xmind-tree-panel" :class="{ 'tree-disabled': disabled }">
     <div class="toolbar">
       <el-button size="small" @click="expandAll">展开全部</el-button>
       <el-button size="small" @click="collapseAll">折叠全部</el-button>
+      <el-button size="small" @click="collapseAllCases">折叠用例</el-button>
       <el-button size="small" @click="zoomIn">放大</el-button>
       <el-button size="small" @click="zoomOut">缩小</el-button>
       <el-button size="small" @click="fitView">适应画布</el-button>
+      <span v-if="disabled && disabledTip" class="disabled-tip">
+        <el-icon class="is-loading" v-if="!readonlyOnly"><Loading /></el-icon>
+        {{ disabledTip }}
+      </span>
     </div>
-    <div ref="container" class="mind-container" tabindex="0"></div>
+    <div class="container-wrap">
+      <div ref="container" class="mind-container" tabindex="0"></div>
+      <div v-show="disabled" class="edit-blocker" @mousedown.stop @click.stop @dblclick.stop @contextmenu.stop></div>
+    </div>
   </div>
 </template>
 
 <script>
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import MindElixir from 'mind-elixir'
+import { Loading } from '@element-plus/icons-vue'
 
 const NODE_COLORS = {
   root: '#2c3e50',
@@ -26,15 +35,22 @@ const NODE_COLORS = {
 
 export default {
   name: 'XMindTreePanel',
+  components: { Loading },
   props: {
     treeData: { type: Object, default: null },
-    generatingPointIds: { type: Object, default: () => new Set() }
+    generatingPointIds: { type: Object, default: () => new Set() },
+    disabled: { type: Boolean, default: false },
+    disabledTip: { type: String, default: '' }
   },
   emits: ['update', 'generate-point'],
   setup(props, { emit }) {
     const container = ref(null)
+    const readonlyOnly = computed(() => /只读/.test(props.disabledTip || ''))
     let mind = null
     let isInternalUpdate = false
+    // 会话级折叠状态：用户点"折叠用例"后置 true，下次 initMind / toME 时把所有 case 节点渲染为折叠
+    // 不写入 store/Redis，纯本地 UI 行为
+    let collapseAllCasesFlag = false
 
     // 优先级配置
     const PRIORITY_CONFIG = {
@@ -46,9 +62,22 @@ export default {
 
     // ---- 加载态管理 ----
 
+    /**
+     * mind.findEle 在节点不存在/被折叠时会抛异常，统一容错。
+     * 找不到返回 null，调用方自行判空。
+     */
+    function safeFindEle(nodeId) {
+      if (!mind || !nodeId) return null
+      try {
+        return mind.findEle(nodeId)
+      } catch (e) {
+        return null
+      }
+    }
+
     function applyLoadingState(nodeId) {
       if (!mind) return
-      var tpcEl = mind.findEle(nodeId)
+      var tpcEl = safeFindEle(nodeId)
       if (!tpcEl) return
       tpcEl.classList.add('point-generating')
       // 添加一个真实的子元素作为闪动蒙层（不用伪元素，避免被选中状态覆盖）
@@ -65,7 +94,7 @@ export default {
 
     function removeLoadingState(nodeId) {
       if (!mind) return
-      var tpcEl = mind.findEle(nodeId)
+      var tpcEl = safeFindEle(nodeId)
       if (!tpcEl) return
       tpcEl.classList.remove('point-generating')
       var mask = tpcEl.querySelector('.generating-mask')
@@ -84,18 +113,31 @@ export default {
     function toME(node, isRoot) {
       if (!node) return null
       var isFree = node.type === 'free'
+      var failed = Array.isArray(node.icons) && node.icons.indexOf('failed') >= 0
+      var baseStyle = isFree
+        ? { background: 'transparent', color: '#333' }
+        : { background: NODE_COLORS[node.type] || NODE_COLORS.step, color: '#fff' }
+      if (failed) {
+        baseStyle.border = '2px solid #f56c6c'
+      }
       const me = {
-        topic: node.title || '',
+        topic: failed ? (node.title || '') + '  ⚠ 生成失败，可右键重试' : (node.title || ''),
         id: node.id,
-        style: isFree
-          ? { background: 'transparent', color: '#333' }
-          : { background: NODE_COLORS[node.type] || NODE_COLORS.step, color: '#fff' },
-        nodeType: node.type
+        style: baseStyle,
+        nodeType: node.type,
+        failed: failed
       }
       if (isRoot) me.root = true
+      // 折叠状态：所有节点都正常透传数据里的 expanded；
+      // case 节点额外受会话级 flag（"折叠用例"按钮）强制折叠
+      if (node.expanded === false || (node.type === 'case' && collapseAllCasesFlag)) {
+        me.expanded = false
+      }
       // 保留 icons 数据（不嵌入 HTML，而是在渲染后手动插入徽章）
+      // failed 不算优先级，用边框单独表达
       if (node.icons && node.icons.length > 0) {
-        me.priority = node.icons[0]
+        var firstNonFailed = node.icons.find(function(i) { return i !== 'failed' })
+        if (firstNonFailed) me.priority = firstNonFailed
       }
       if (node.children && node.children.length > 0) {
         me.children = node.children.map(function(c) { return toME(c, false) })
@@ -105,12 +147,16 @@ export default {
 
     function fromME(me) {
       if (!me) return null
-      var icons = me.priority ? [me.priority] : null
+      var icons = []
+      if (me.priority) icons.push(me.priority)
+      if (me.failed) icons.push('failed')
+      // 标题里的"⚠ 生成失败，可右键重试"是展示装饰，写回时去掉
+      var title = (me.topic || '').replace(/\s*⚠ 生成失败，可右键重试\s*$/, '')
       var node = {
         id: me.id,
-        title: me.topic || '',
+        title: title,
         type: me.nodeType || 'free',
-        icons: icons,
+        icons: icons.length ? icons : null,
         expanded: me.expanded !== false,
         children: []
       }
@@ -125,6 +171,55 @@ export default {
     function closeContextMenu() {
       var overlay = container.value.querySelector('.context-menu')
       if (overlay) overlay.click()
+    }
+
+    /**
+     * 把指定节点居中到画布。优先使用 toCenterByEle（mind-elixir 高版本 API），
+     * 回退到操纵 me-tpc 元素的 scrollIntoView，最次回退到 toCenter。
+     */
+    function centerOnNode(nodeId) {
+      if (!mind || !nodeId) return
+      try {
+        if (typeof mind.toCenterByEle === 'function') {
+          var ele = mind.findEle(nodeId)
+          if (ele) {
+            mind.toCenterByEle(ele)
+            return
+          }
+        }
+        // 回退方案：直接定位 DOM
+        var dom = container.value && container.value.querySelector(
+                'me-tpc[data-nodeid="me' + nodeId + '"]')
+        if (dom && dom.scrollIntoView) {
+          dom.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
+          return
+        }
+      } catch (e) {
+        // 忽略，回退到 toCenter
+      }
+      if (mind.toCenter) mind.toCenter()
+    }
+
+    /**
+     * 找到当前树里"最末新增"的关注节点居中。优先级：
+     * 1) 最末一个 case 节点（生成用例阶段最新增）
+     * 2) 最末一个 point 节点（提取阶段最新增）
+     * 3) 整棵树居中
+     */
+    function centerOnLatestNode() {
+      if (!mind || !mind.nodeData) return
+      var latestCase = null
+      var latestPoint = null
+      function walk(node) {
+        if (!node) return
+        if (node.nodeType === 'case') latestCase = node
+        else if (node.nodeType === 'point') latestPoint = node
+        if (node.children) node.children.forEach(walk)
+      }
+      walk(mind.nodeData)
+      var target = latestCase || latestPoint
+      if (target) centerOnNode(target.id)
+      else if (mind.toCenter) mind.toCenter()
     }
 
     function initMind() {
@@ -222,6 +317,11 @@ export default {
       setTimeout(function() {
         renderPriorityBadges()
       }, 0)
+
+      // 生成中（disabled=true）：每次重建后把视图定位到最近新增的节点，避免被推出可视范围
+      if (props.disabled) {
+        setTimeout(function() { centerOnLatestNode() }, 0)
+      }
 
       // 拦截正在生成测试点的右键菜单
       container.value.addEventListener('contextmenu', function(e) {
@@ -346,7 +446,7 @@ export default {
           // 因为 Mind Elixir 通过 transform: scale 实现缩放，rect 是缩放后的视口尺寸，
           // 而 inline style 是缩放前的布局尺寸，混用会导致编辑框尺寸与节点对不上
           setTimeout(function() {
-            var tpcEl = operation.obj ? mind.findEle(operation.obj.id) : null
+            var tpcEl = operation.obj ? safeFindEle(operation.obj.id) : null
             var inputBox = document.getElementById('input-box')
             if (inputBox && tpcEl) {
               var width = tpcEl.offsetWidth
@@ -366,7 +466,7 @@ export default {
           if (operation.obj) {
             operation.obj.nodeType = 'free'
             operation.obj.style = { background: 'transparent', color: '#333' }
-            var tpcEl = mind.findEle(operation.obj.id)
+            var tpcEl = safeFindEle(operation.obj.id)
             if (tpcEl) {
               tpcEl.style.background = 'transparent'
               tpcEl.style.color = '#333'
@@ -429,7 +529,7 @@ export default {
         nodeData.priority = null
       }
 
-      var tpcEl = mind.findEle(nodeId)
+      var tpcEl = safeFindEle(nodeId)
       if (tpcEl) {
         tpcEl.style.background = isFree ? 'transparent' : (NODE_COLORS[newType] || NODE_COLORS.step)
         tpcEl.style.color = isFree ? '#333' : '#fff'
@@ -461,7 +561,8 @@ export default {
           child.priority = null
         }
 
-        var tpcEl = mind.findEle(child.id)
+        // 节点可能被祖先折叠（如 case 折叠状态下设置为自由节点），DOM 不存在时只同步数据
+        var tpcEl = safeFindEle(child.id)
         if (tpcEl) {
           tpcEl.style.background = bg
           tpcEl.style.color = fg
@@ -518,7 +619,7 @@ export default {
         if (!nodeData) return
 
         if (nodeData.priority) {
-          var tpcEl = mind.findEle(nodeData.id)
+          var tpcEl = safeFindEle(nodeData.id)
           if (tpcEl && !tpcEl.querySelector('.priority-badge')) {
             var config = PRIORITY_CONFIG[nodeData.priority]
             if (config) {
@@ -686,6 +787,8 @@ export default {
 
     function expandAll() {
       if (!mind) return
+      // 清掉折叠 flag，让后续 initMind / toME 不再强制折叠 case
+      collapseAllCasesFlag = false
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, true)
     }
@@ -694,6 +797,32 @@ export default {
       if (!mind) return
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, false)
+    }
+
+    /**
+     * 一键折叠所有用例：把 nodeType === 'case' 的节点折起来（隐藏前置条件/步骤等子节点），
+     * 模块和测试点保持当前展开状态。
+     *
+     * 实现说明：直接改 mind.nodeData 上 case 节点的 expanded=false，再调 mind.layout() 重排。
+     * 不用 mind.expandNode(el, false) 逐个折叠 —— mind-elixir 5.11 的 expandNode 在折叠后
+     * 会做 this.move(dx, dy) 来"保持节点视觉位置不动"，循环调用会累积平移把整张图推出可视区域，
+     * 表现为"折叠后面板全空"。
+     */
+    function collapseAllCases() {
+      if (!mind || !mind.nodeData) return
+      collapseAllCasesFlag = true
+      function walk(node) {
+        if (!node) return
+        if (node.nodeType === 'case') node.expanded = false
+        if (node.children) node.children.forEach(walk)
+      }
+      walk(mind.nodeData)
+      mind.layout()
+      mind.linkDiv()
+      // layout 会清空 nodes 容器并重建 DOM，徽章 wrapper 会丢失，需重新渲染
+      setTimeout(function() { renderPriorityBadges() }, 0)
+      // 居中回到根节点附近，避免历次平移残留导致的偏移
+      if (mind.toCenter) mind.toCenter()
     }
 
     function zoomIn() { if (mind) mind.scale(mind.scaleVal + 0.1) }
@@ -731,11 +860,43 @@ export default {
         syncLoadingStates()
       }, 50)
 
-      // 保存更新后的数据
-      emitUpdate()
+      // 生成期间：把刚加的最后一条用例居中（无用例时回退到 point 节点）
+      if (props.disabled) {
+        setTimeout(function() {
+          var lastCase = cases && cases.length ? cases[cases.length - 1] : null
+          centerOnNode(lastCase ? lastCase.id : pointId)
+        }, 60)
+      }
+
+      // 注意：流式中间态不调 emitUpdate 写回 store，避免 isInternalUpdate 屏蔽
+      // 后续接收的 POINTS_GENERATED 整树推送会作为权威更新触发 watch + 重建
     }
 
     // ---- 生命周期 ----
+
+    /**
+     * 强制销毁并重建 mind-elixir 实例。
+     * 用例生成阶段会高频调用 updatePointCases（直接改 nodeData + 局部 layout），mind-elixir 内部
+     * 的 DOM↔nodeObj 映射、selection、disposable 等会逐步累积漂移；之后用户一缩放/再操作就可能把
+     * 画布推出可视区或画成空白。生成结束这一刻销毁重建相当于"重进页面"，把状态清干净。
+     */
+    function rebuild() {
+      if (!props.treeData || !container.value) return
+      if (mind) {
+        try {
+          if (typeof mind.destroy === 'function') mind.destroy()
+        } catch (e) {
+          // mind-elixir 内部异常忽略，下面的 innerHTML 兜底会清掉残留
+        }
+        mind = null
+      }
+      // 兜底：destroy 可能没清干净 DOM
+      if (container.value) container.value.innerHTML = ''
+      nextTick(function() {
+        initMind()
+        setTimeout(syncLoadingStates, 50)
+      })
+    }
 
     watch(function() { return props.treeData }, function(n, o) {
       if (isInternalUpdate) return
@@ -766,9 +927,9 @@ export default {
     })
 
     return {
-      container,
-      expandAll, collapseAll, zoomIn, zoomOut, fitView,
-      updatePointCases
+      container, readonlyOnly,
+      expandAll, collapseAll, collapseAllCases, zoomIn, zoomOut, fitView,
+      updatePointCases, centerOnNode, rebuild
     }
   }
 }
@@ -786,8 +947,23 @@ export default {
   border-bottom: 1px solid #e6e6e6;
   display: flex;
   gap: 8px;
+  align-items: center;
   background: #fafafa;
   flex-shrink: 0;
+}
+.disabled-tip {
+  margin-left: auto;
+  font-size: 12px;
+  color: #e6a23c;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.container-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  min-height: 0;
 }
 .mind-container {
   flex: 1;
@@ -797,6 +973,14 @@ export default {
   min-height: 400px;
   width: 100%;
 }
+.edit-blocker {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  cursor: not-allowed;
+  z-index: 10;
+}
+.tree-disabled .mind-container { opacity: 0.85; }
 </style>
 
 <style>
