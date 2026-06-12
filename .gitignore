@@ -72,3 +72,6 @@ tms-agent/settings.yml
 ### Binary / third-party tools ###
 tms-agent/device/android/tools/static/scrcpy-server
 tms-agent/device/android/tools/static/scrcpy-server-*.zip
+
+# 配置对比临时工作区
+confdiff-workspace/

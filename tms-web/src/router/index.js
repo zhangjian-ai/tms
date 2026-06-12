@@ -68,6 +68,33 @@ const routes = [
           title: '用例生成工作区',
           requiresAuth: true
         }
+      },
+      {
+        path: 'confdiff/machines',
+        name: 'ConfMachineList',
+        component: () => import('@/views/confdiff/MachineList.vue'),
+        meta: {
+          title: '机器管理',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'confdiff/projects',
+        name: 'ConfProjectList',
+        component: () => import('@/views/confdiff/ProjectList.vue'),
+        meta: {
+          title: '项目管理',
+          requiresAuth: true
+        }
+      },
+      {
+        path: 'confdiff/compare',
+        name: 'ConfigCompare',
+        component: () => import('@/views/confdiff/ConfigCompare.vue'),
+        meta: {
+          title: '配置对比',
+          requiresAuth: true
+        }
       }
     ]
   },

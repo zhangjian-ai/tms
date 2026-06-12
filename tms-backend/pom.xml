@@ -182,6 +182,13 @@
             <version>0.64.8</version>
         </dependency>
 
+        <!-- SSH: jsch 维护版 fork，包名兼容 com.jcraft.jsch，供 Hutool extra.ssh 使用 -->
+        <dependency>
+            <groupId>com.github.mwiede</groupId>
+            <artifactId>jsch</artifactId>
+            <version>0.2.17</version>
+        </dependency>
+
 
     </dependencies>
     <dependencyManagement>

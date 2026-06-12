@@ -32,6 +32,25 @@
             <template #title>用例生成</template>
           </el-menu-item>
         </el-sub-menu>
+
+        <el-sub-menu index="confdiff">
+          <template #title>
+            <el-icon><Files /></el-icon>
+            <span>配置对比</span>
+          </template>
+          <el-menu-item index="/confdiff/compare">
+            <el-icon><DocumentCopy /></el-icon>
+            <template #title>配置对比</template>
+          </el-menu-item>
+          <el-menu-item index="/confdiff/machines">
+            <el-icon><Monitor /></el-icon>
+            <template #title>机器管理</template>
+          </el-menu-item>
+          <el-menu-item index="/confdiff/projects">
+            <el-icon><FolderOpened /></el-icon>
+            <template #title>项目管理</template>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
@@ -89,7 +108,11 @@ import {
   Fold,
   Expand,
   Document,
-  SetUp
+  SetUp,
+  Files,
+  DocumentCopy,
+  Monitor,
+  FolderOpened
 } from '@element-plus/icons-vue'
 
 export default {
@@ -99,7 +122,11 @@ export default {
     Fold,
     Expand,
     Document,
-    SetUp
+    SetUp,
+    Files,
+    DocumentCopy,
+    Monitor,
+    FolderOpened
   },
   setup() {
     const route = useRoute()
@@ -120,7 +147,10 @@ export default {
       const titleMap = {
         '/devices': '设备管理',
         '/devices/connection': '设备连接信息',
-        '/toolbox/testgen': '用例生成'
+        '/toolbox/testgen': '用例生成',
+        '/confdiff/compare': '配置对比',
+        '/confdiff/machines': '机器管理',
+        '/confdiff/projects': '项目管理'
       }
       if (route.path.startsWith('/toolbox/testgen/')) return '用例生成工作区'
       return titleMap[route.path] || '设备管理'

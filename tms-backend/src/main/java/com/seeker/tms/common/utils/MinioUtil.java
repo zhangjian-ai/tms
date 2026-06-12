@@ -59,6 +59,13 @@ public class MinioUtil {
      * 按 objectKey + 字节数组上传文件
      */
     public boolean uploadFile(String objectKey, byte[] data) {
+        return uploadFile(objectKey, data, "application/octet-stream");
+    }
+
+    /**
+     * 按 objectKey + 字节数组 + 内容类型上传文件
+     */
+    public boolean uploadFile(String objectKey, byte[] data, String contentType) {
         try {
             String bucketName = minioConfig.getBucketName();
             if (!minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build())) {
@@ -71,7 +78,7 @@ public class MinioUtil {
                             .bucket(bucketName)
                             .object(objectKey)
                             .stream(bais, data.length, -1)
-                            .contentType("application/octet-stream")
+                            .contentType(contentType)
                             .build());
             return resp.etag() != null;
         } catch (Exception e) {
