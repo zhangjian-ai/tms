@@ -113,10 +113,10 @@ public class GitSnapshotService {
         }
     }
 
-    /** 更新远程引用(联网),带非交互环境前缀 */
+    /** 更新远程引用(联网),带非交互环境前缀。同时拉取 tag */
     private void fetch(Session session, String repoDir) {
         sshGitClient.exec(session, StrUtil.format(
-                "cd {} && {}git fetch --all --prune", quote(repoDir), GIT_NET_ENV), FETCH_TIMEOUT_MS);
+                "cd {} && {}git fetch --all --prune --tags", quote(repoDir), GIT_NET_ENV), FETCH_TIMEOUT_MS);
     }
 
     /**
@@ -154,8 +154,8 @@ public class GitSnapshotService {
         } catch (RuntimeException e) {
             throw new RuntimeException("分支不存在: " + branch, e);
         }
-        // 字段用 \\x1f(单元分隔)分隔,行用换行分隔
-        String fmt = "%H%x1f%h%x1f%s%x1f%an%x1f%ad";
+        // 字段用 \\x1f(单元分隔)分隔,行用换行分隔;%D 为引用修饰(含 tag)
+        String fmt = "%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%D";
         String out = sshGitClient.exec(session, StrUtil.format(
                 "cd {} && git log origin/{} -n {} --date=format:'%Y-%m-%d %H:%M' --format='{}'",
                 quote(repoDir), branch, limit, fmt));
@@ -164,9 +164,23 @@ public class GitSnapshotService {
             if (line.trim().isEmpty()) continue;
             String[] f = line.split("\\u001f", -1);
             if (f.length < 5) continue;
-            commits.add(new CommitInfo(f[0], f[1], f[2], f[3], f[4]));
+            String tag = f.length > 5 ? extractTags(f[5]) : "";
+            commits.add(new CommitInfo(f[0], f[1], f[2], f[3], f[4], tag));
         }
         return commits;
+    }
+
+    /** 从 git 的引用修饰(%D)中提取 tag,如 "HEAD -> master, tag: v1.0, origin/master" -> "v1.0" */
+    private String extractTags(String decoration) {
+        if (StrUtil.isBlank(decoration)) return "";
+        List<String> tags = new ArrayList<>();
+        for (String ref : decoration.split(",")) {
+            String r = ref.trim();
+            if (r.startsWith("tag: ")) {
+                tags.add(r.substring("tag: ".length()).trim());
+            }
+        }
+        return String.join(", ", tags);
     }
 
 

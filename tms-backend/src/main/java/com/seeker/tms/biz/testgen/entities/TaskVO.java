@@ -18,6 +18,9 @@ public class TaskVO {
     @ApiModelProperty("需求类型")
     private String prdType;
 
+    @ApiModelProperty("是否解析文档内图片")
+    private Boolean parseImage;
+
     @ApiModelProperty("状态")
     private String status;
 

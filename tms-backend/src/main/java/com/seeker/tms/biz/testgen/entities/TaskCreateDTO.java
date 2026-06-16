@@ -17,6 +17,9 @@ public class TaskCreateDTO {
     @NotBlank(message = "需求类型不能为空")
     private String prdType;
 
+    @ApiModelProperty(value = "是否解析文档内图片，默认否", example = "false")
+    private Boolean parseImage;
+
     @ApiModelProperty("创建人")
     private String creator;
 }

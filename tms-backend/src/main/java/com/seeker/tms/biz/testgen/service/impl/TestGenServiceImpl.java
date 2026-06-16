@@ -86,6 +86,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         TestGenTaskPO task = new TestGenTaskPO();
         task.setPrdName(dto.getPrdName());
         task.setPrdType(dto.getPrdType());
+        task.setParseImage(Boolean.TRUE.equals(dto.getParseImage()));
         task.setCreator(dto.getCreator());
         task.setStatus(TaskStatus.NEW.getCode());
         task.setCreateTime(LocalDateTime.now());
@@ -157,10 +158,11 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             TestGenWebSocketHandler.sendPhaseChanged(wsKey, "PLAN_REVIEW", "请确认或调整需求章节大纲");
             TestGenWebSocketHandler.sendPlanDrafted(wsKey, outline);
             TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.PLAN_REVIEW.getCode(), "章节摘要已生成，等待确认");
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error("生成大纲失败，taskId={}", taskId, e);
-            updateStatus(taskId, TaskStatus.FAILED.getCode(), "失败：" + e.getMessage());
-            TestGenWebSocketHandler.sendError(wsKey, e.getMessage());
+            String reason = describeThrowable(e);
+            updateStatus(taskId, TaskStatus.FAILED.getCode(), "失败：" + reason);
+            TestGenWebSocketHandler.sendError(wsKey, reason);
         }
     }
 
@@ -225,11 +227,12 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             TestGenWebSocketHandler.sendPointsGenerated(wsKey, root);
 
             // 阶段 B-2：自动反思（去重 + 补漏），完成后再推一次树
+            // 精修是"尽力而为"的增强步骤，任何失败（含 Error）都不应阻断后续的用例生成
             try {
                 refinePoints(taskId, wsKey, effective, truncatedDoc);
-            } catch (Exception ex) {
+            } catch (Throwable ex) {
                 log.warn("taskId={} 自动反思失败，跳过精修，直接进入用例生成阶段", taskId, ex);
-                TestGenWebSocketHandler.sendProgress(wsKey, "自动精修失败，跳过：" + ex.getMessage());
+                TestGenWebSocketHandler.sendProgress(wsKey, "自动精修失败，跳过：" + describeThrowable(ex));
             }
 
             XMindNode refinedRoot = getXMindData(taskId);
@@ -259,11 +262,12 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             TestGenWebSocketHandler.sendTaskStatus(wsKey, TaskStatus.EDITING.getCode(), doneMsg);
             TestGenWebSocketHandler.sendPointsGenerated(wsKey, finalRoot);
             TestGenWebSocketHandler.sendPhaseChanged(wsKey, "EDITING", "用例生成完成");
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error("提取测试点失败，taskId={}", taskId, e);
             generatingTasks.remove(taskId);
-            updateStatus(taskId, TaskStatus.FAILED.getCode(), "失败：" + e.getMessage());
-            TestGenWebSocketHandler.sendError(wsKey, e.getMessage());
+            String reason = describeThrowable(e);
+            updateStatus(taskId, TaskStatus.FAILED.getCode(), "失败：" + reason);
+            TestGenWebSocketHandler.sendError(wsKey, reason);
         }
     }
 
@@ -939,6 +943,13 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
     // ============ 内部工具方法 ============
 
+    /** 提取 Throwable 的可读描述：Error（如 OOM/NoClassDefFound）往往无 message，需带上类名 */
+    private String describeThrowable(Throwable e) {
+        String msg = e.getMessage();
+        if (msg != null && !msg.isBlank()) return msg;
+        return e.getClass().getSimpleName();
+    }
+
     private void updateStatus(Integer taskId, String status, String message) {
         TestGenTaskPO t = new TestGenTaskPO();
         t.setId(taskId);
@@ -974,9 +985,13 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             TestGenWebSocketHandler.sendProgress(wsKey, "正在解析文档内容...");
         }
 
+        // 是否解析文档内图片由任务创建时的设置决定
+        TestGenTaskPO task = taskMapper.selectById(taskId);
+        boolean parseImage = task != null && Boolean.TRUE.equals(task.getParseImage());
+
         String prdUrl = minioUtil.getUrl(prdName);
 
-        String text = documentParserService.parseDocument(prdUrl, prdName, (progress, message) -> {
+        String text = documentParserService.parseDocument(prdUrl, prdName, parseImage, (progress, message) -> {
             if (wsKey != null) {
                 TestGenWebSocketHandler.sendProgress(wsKey, message);
             }

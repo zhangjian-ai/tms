@@ -44,10 +44,18 @@ public class DocumentParserServiceImpl implements DocumentParserService {
     /** 图片识别并发度：vision API 通常按账号有 RPS 限制，4 是稳妥起点 */
     private static final int IMAGE_RECOGNIZE_CONCURRENCY = 4;
 
+    /** Markdown 图片语法：![alt](src "title")，src 不含空白与右括号，兼容 base64 与 URL */
+    private static final java.util.regex.Pattern MD_IMAGE_PATTERN =
+            java.util.regex.Pattern.compile("!\\[[^\\]]*]\\(\\s*([^\\s)]+)(?:\\s+\"[^\"]*\")?\\s*\\)");
+    /** Markdown 内可能内嵌的 HTML <img src="..."> */
+    private static final java.util.regex.Pattern HTML_IMAGE_PATTERN =
+            java.util.regex.Pattern.compile("<img\\b[^>]*?\\bsrc\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
     private final LlmProperties llmProperties;
 
     @Override
-    public String parseDocument(String url, String fileName, BiConsumer<Integer, String> progressCallback) {
+    public String parseDocument(String url, String fileName, boolean parseImage, BiConsumer<Integer, String> progressCallback) {
         if (progressCallback != null) {
             progressCallback.accept(0, "正在下载文档...");
         }
@@ -64,12 +72,13 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
         String ext = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
 
-        // 第一步：提取文本（图片位置留占位符）+ 收集图片
+        // 第一步：提取文本。仅在需要解析图片时才抽取图片字节（避免无谓的解码与堆占用）
         List<byte[]> pictures = new ArrayList<>();
         String text = switch (ext) {
-            case "pdf" -> parsePdf(fileBytes, pictures);
-            case "docx" -> parseDocx(fileBytes, pictures);
-            case "txt", "md" -> new String(fileBytes, StandardCharsets.UTF_8);
+            case "pdf" -> parsePdf(fileBytes, pictures, parseImage);
+            case "docx" -> parseDocx(fileBytes, pictures, parseImage);
+            case "md", "markdown" -> parseMarkdown(fileBytes, pictures, parseImage);
+            case "txt" -> new String(fileBytes, StandardCharsets.UTF_8);
             default -> new String(fileBytes, StandardCharsets.UTF_8);
         };
 
@@ -77,8 +86,8 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             progressCallback.accept(40, "文本提取完成，共 " + pictures.size() + " 张图片");
         }
 
-        // 第二步：识别图片并回填到占位符位置
-        if (!pictures.isEmpty()) {
+        // 第二步：识别图片并回填占位符。未开启图片解析时，上一步已不抽取图片，pictures 为空，直接跳过
+        if (parseImage && !pictures.isEmpty()) {
             text = recognizeAndFillBack(text, pictures, progressCallback);
         }
 
@@ -87,6 +96,70 @@ public class DocumentParserServiceImpl implements DocumentParserService {
         }
 
         return text;
+    }
+
+    // ---- Markdown 解析：图片以内联链接/base64 形式出现，需单独抽取 ----
+
+    /**
+     * 解析 Markdown 文本。
+     * - parseImage=false：直接清理掉所有图片（Markdown 语法与内嵌 <img>），保持文本纯净；
+     * - parseImage=true：把可获取到字节的图片（base64 / http(s) 链接）替换为占位符并收集，
+     *   复用 {@link #recognizeAndFillBack} 走与 PDF/DOCX 一致的识别回填逻辑；
+     *   无法获取的图片（相对路径等）一律清理。
+     */
+    private String parseMarkdown(byte[] fileBytes, List<byte[]> pictures, boolean parseImage) {
+        String text = new String(fileBytes, StandardCharsets.UTF_8);
+        int[] imgIdx = {0};
+        text = replaceMarkdownImages(text, MD_IMAGE_PATTERN, pictures, parseImage, imgIdx);
+        text = replaceMarkdownImages(text, HTML_IMAGE_PATTERN, pictures, parseImage, imgIdx);
+        // 清理图片移除后残留的多余空行
+        return text.replaceAll("[ \\t]+\\n", "\n").replaceAll("\\n{3,}", "\n\n").trim();
+    }
+
+    /**
+     * 用占位符替换匹配到的图片标记；imgIdx 在多次调用间连续递增以保证占位符与 pictures 下标对齐。
+     * 未开启解析、或图片字节不可获取时，替换为空串（即清理）。
+     */
+    private String replaceMarkdownImages(String text, java.util.regex.Pattern pattern,
+                                         List<byte[]> pictures, boolean parseImage, int[] imgIdx) {
+        java.util.regex.Matcher m = pattern.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String replacement = "";
+            if (parseImage) {
+                byte[] bytes = loadImageBytes(m.group(1));
+                if (bytes != null && bytes.length > 1024) {
+                    imgIdx[0]++;
+                    pictures.add(bytes);
+                    replacement = "\n" + String.format(IMG_PLACEHOLDER, imgIdx[0]) + "\n";
+                }
+            }
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /** 从 Markdown 图片 src 加载字节：支持 data:base64 与 http(s) 链接，其余（相对路径/SVG）返回 null */
+    private byte[] loadImageBytes(String src) {
+        if (src == null) return null;
+        src = src.trim();
+        try {
+            if (src.startsWith("data:")) {
+                if (src.regionMatches(true, 0, "data:image/svg", 0, 14)) return null;
+                int comma = src.indexOf(',');
+                int base64Marker = src.indexOf(";base64");
+                if (comma < 0 || base64Marker < 0 || base64Marker > comma) return null;
+                // MIME decoder 容忍换行/空白，兼容被折行的 base64
+                return Base64.getMimeDecoder().decode(src.substring(comma + 1).trim());
+            }
+            if (src.startsWith("http://") || src.startsWith("https://")) {
+                return downloadFile(src);
+            }
+        } catch (Exception e) {
+            log.warn("Markdown 图片加载失败: {}", src, e);
+        }
+        return null; // 相对路径等无法获取，忽略
     }
 
     @Override
@@ -258,7 +331,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     // ---- PDF 解析：文本中留占位符，图片按顺序收集 ----
 
-    private String parsePdf(byte[] fileBytes, List<byte[]> pictures) {
+    private String parsePdf(byte[] fileBytes, List<byte[]> pictures, boolean parseImage) {
         try (PDDocument doc = PDDocument.load(fileBytes)) {
             // 提取全部文本（PDF 转 HTML 再提取，保留图片位置）
             // PDFBox 的 TextStripper 无法标记图片位置，改为逐页处理
@@ -271,9 +344,10 @@ public class DocumentParserServiceImpl implements DocumentParserService {
                 stripper.setEndPage(pageNum + 1);
                 String pageText = stripper.getText(doc);
 
-                // 提取该页图片
-                PDPage page = doc.getPage(pageNum);
-                List<byte[]> pageImages = extractPageImages(page);
+                // 仅在需要解析图片时才抽取该页图片，否则直接丢弃图片数据、只保留文本
+                List<byte[]> pageImages = parseImage
+                        ? extractPageImages(doc.getPage(pageNum))
+                        : List.of();
 
                 if (pageImages.isEmpty()) {
                     result.append(pageText);
@@ -343,39 +417,42 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     // ---- Word (docx) 解析：使用 Mammoth 转 HTML 再转 Markdown ----
 
-    private String parseDocx(byte[] fileBytes, List<byte[]> pictures) {
+    private String parseDocx(byte[] fileBytes, List<byte[]> pictures, boolean parseImage) {
         try {
             // 使用 Mammoth 将 DOCX 转成 HTML
             org.zwobble.mammoth.DocumentConverter converter = new org.zwobble.mammoth.DocumentConverter();
             org.zwobble.mammoth.Result<String> result = converter.convertToHtml(new ByteArrayInputStream(fileBytes));
             String html = result.getValue();
 
-            // 从 HTML 中提取 base64 编码的图片
-            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("<img src=\"data:image/([^;]+);base64,([^\"]+)\"");
-            java.util.regex.Matcher matcher = pattern.matcher(html);
+            if (parseImage) {
+                // 从 HTML 中提取 base64 编码的图片
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("<img src=\"data:image/([^;]+);base64,([^\"]+)\"");
+                java.util.regex.Matcher matcher = pattern.matcher(html);
 
-            int imgIdx = 1;
-            while (matcher.find()) {
-                String base64Data = matcher.group(2);
-                try {
-                    byte[] imgData = java.util.Base64.getDecoder().decode(base64Data);
-                    if (imgData.length > 256 * 1024) {
-                        imgData = compressImage(imgData);
+                while (matcher.find()) {
+                    String base64Data = matcher.group(2);
+                    try {
+                        byte[] imgData = java.util.Base64.getDecoder().decode(base64Data);
+                        if (imgData.length > 256 * 1024) {
+                            imgData = compressImage(imgData);
+                        }
+                        if (imgData.length > 1024) {
+                            pictures.add(imgData);
+                        }
+                    } catch (Exception e) {
+                        log.warn("解码图片失败: {}", e.getMessage());
                     }
-                    if (imgData.length > 1024) {
-                        pictures.add(imgData);
-                    }
-                } catch (Exception e) {
-                    log.warn("解码图片失败: {}", e.getMessage());
                 }
-                imgIdx++;
-            }
 
-            // 用占位符替换 <img> 标签
-            imgIdx = 1;
-            while (html.contains("<img")) {
-                html = html.replaceFirst("<img[^>]*>", String.format(IMG_PLACEHOLDER, imgIdx));
-                imgIdx++;
+                // 用占位符替换 <img> 标签，供后续识别回填
+                int imgIdx = 1;
+                while (html.contains("<img")) {
+                    html = html.replaceFirst("<img[^>]*>", String.format(IMG_PLACEHOLDER, imgIdx));
+                    imgIdx++;
+                }
+            } else {
+                // 不解析图片：直接移除 <img> 标签，不解码 base64、不占用内存
+                html = html.replaceAll("<img[^>]*>", "");
             }
 
             // 使用 flexmark 将 HTML 转成 Markdown（保留标题层级）

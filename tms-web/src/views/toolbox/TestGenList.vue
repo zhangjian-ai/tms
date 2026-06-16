@@ -79,7 +79,7 @@
             :on-error="onUploadError"
             :on-remove="onUploadRemove"
             :before-upload="beforeUpload"
-            accept=".pdf,.docx,.txt"
+            accept=".pdf,.docx,.txt,.md,.markdown"
             :show-file-list="true"
           >
             <el-button type="primary" plain size="default">
@@ -87,7 +87,7 @@
               选择文件
             </el-button>
             <template #tip>
-              <div class="upload-tip">支持 PDF、DOCX、TXT 格式，最大 100MB</div>
+              <div class="upload-tip">支持 PDF、DOCX、TXT、Markdown 格式，最大 100MB</div>
             </template>
           </el-upload>
         </el-form-item>
@@ -97,6 +97,10 @@
             <el-radio-button label="BURY">埋点需求</el-radio-button>
             <el-radio-button label="API">接口需求</el-radio-button>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="图片解析" prop="parseImage">
+          <el-switch v-model="createForm.parseImage" />
+          <div class="upload-tip">开启后将解析文档内图片并回填至原文，耗时更长；关闭则仅解析文本内容</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -130,7 +134,7 @@ export default {
     const createDialogVisible = ref(false)
     const formRef = ref(null)
     const uploadRef = ref(null)
-    const createForm = ref({ prdName: '', prdType: 'BIZ' })
+    const createForm = ref({ prdName: '', prdType: 'BIZ', parseImage: false })
     const uploadUrl = `${config.baseURL}${config.apiPrefix}/common/file/upload`
 
     const formRules = {
@@ -178,9 +182,9 @@ export default {
     }
 
     const beforeUpload = (file) => {
-      const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain']
-      if (!validTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt)$/i)) {
-        ElMessage.error('仅支持 PDF、DOCX、TXT 格式')
+      const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown']
+      if (!validTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt|md|markdown)$/i)) {
+        ElMessage.error('仅支持 PDF、DOCX、TXT、Markdown 格式')
         return false
       }
       if (file.size > 100 * 1024 * 1024) {
@@ -208,7 +212,7 @@ export default {
     }
 
     const openCreateDialog = () => {
-      createForm.value = { prdName: '', prdType: 'BIZ' }
+      createForm.value = { prdName: '', prdType: 'BIZ', parseImage: false }
       createDialogVisible.value = true
     }
 

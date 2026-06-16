@@ -21,4 +21,6 @@ public class CommitInfo {
     private String author;
     /** 提交时间 */
     private String date;
+    /** 该提交对应的 tag(多个以逗号分隔,无则为空) */
+    private String tag;
 }

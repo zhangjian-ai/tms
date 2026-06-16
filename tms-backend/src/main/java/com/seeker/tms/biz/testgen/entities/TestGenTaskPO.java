@@ -18,6 +18,8 @@ public class TestGenTaskPO {
     private Integer id;
     private String prdName;
     private String prdType;
+    /** 是否解析文档内图片：true 才解析图片并回填原文，否则仅解析文本 */
+    private Boolean parseImage;
     private String status;
     private String message;
     private String xmindFileName;

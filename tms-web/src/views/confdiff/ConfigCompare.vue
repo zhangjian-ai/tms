@@ -40,8 +40,9 @@
             <el-form-item label="commit">
               <el-select v-model="form.refA.commit" placeholder="留空取分支最新" filterable clearable style="width: 100%"
                 :loading="loadingCommitsA">
-                <el-option v-for="c in commitsA" :key="c.hash" :label="`${c.shortHash} · ${c.message}`" :value="c.hash">
+                <el-option v-for="c in commitsA" :key="c.hash" :label="commitLabel(c)" :value="c.hash">
                   <span style="font-family: monospace">{{ c.shortHash }}</span>
+                  <el-tag v-if="c.tag" size="small" type="success" effect="plain" style="margin-left: 6px">{{ c.tag }}</el-tag>
                   <span style="margin-left: 8px; color: #909399">{{ c.message }}</span>
                   <span style="float: right; color: #c0c4cc; font-size: 12px">{{ c.date }}</span>
                 </el-option>
@@ -59,8 +60,9 @@
             <el-form-item label="commit">
               <el-select v-model="form.refB.commit" placeholder="留空取分支最新" filterable clearable style="width: 100%"
                 :loading="loadingCommitsB">
-                <el-option v-for="c in commitsB" :key="c.hash" :label="`${c.shortHash} · ${c.message}`" :value="c.hash">
+                <el-option v-for="c in commitsB" :key="c.hash" :label="commitLabel(c)" :value="c.hash">
                   <span style="font-family: monospace">{{ c.shortHash }}</span>
+                  <el-tag v-if="c.tag" size="small" type="success" effect="plain" style="margin-left: 6px">{{ c.tag }}</el-tag>
                   <span style="margin-left: 8px; color: #909399">{{ c.message }}</span>
                   <span style="float: right; color: #c0c4cc; font-size: 12px">{{ c.date }}</span>
                 </el-option>
@@ -495,6 +497,12 @@ export default {
       else { form.refB.commit = ''; loadCommits('B') }
     }
 
+    // commit 下拉选中后的显示文案,带 tag
+    const commitLabel = (c) => {
+      const tag = c.tag ? `[${c.tag}] ` : ''
+      return `${c.shortHash} · ${tag}${c.message}`
+    }
+
     // 触发异步对比:立即返回 id,后台执行,前端轮询结果
     const run = async () => {
       await formRef.value.validate()
@@ -570,7 +578,7 @@ export default {
       projects, branches, commitsA, commitsB,
       loadingBranches, loadingCommitsA, loadingCommitsB,
       running, result, history, activeContentFiles, formRef, form, rules,
-      prepare, ready, doPrepare, fileSummary,
+      prepare, ready, doPrepare, fileSummary, commitLabel,
       loadProjects, onProjectChange, loadBranches, onBranchChange,
       loadHistory, viewHistory,
       run, openReport, rowText, dirEmpty, fileEmpty, contentEmpty
