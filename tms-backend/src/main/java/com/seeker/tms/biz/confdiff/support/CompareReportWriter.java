@@ -2,16 +2,15 @@ package com.seeker.tms.biz.confdiff.support;
 
 import com.seeker.tms.biz.confdiff.entities.compare.CompareResultVO;
 import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare;
+import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare.CellDiff;
 import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare.FileContentDiff;
-import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare.RowLine;
+import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare.RowDiff;
 import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare.SheetContentDiff;
 import com.seeker.tms.biz.confdiff.entities.compare.DirCompare;
 import com.seeker.tms.biz.confdiff.entities.compare.FileCompare;
 
 import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * 生成 HTML 报告。按三大模块组织:目录对比、文件对比、文件内容对比。
@@ -22,7 +21,6 @@ public class CompareReportWriter {
     /** 每类行最多输出条数,防止超大报告 */
     private static final int MAX_ROWS = 1000;
     private static final String ROOT = "(根目录)";
-    private static final String CELL_SEP_RE = String.valueOf(ExcelComparator.CELL_SEP);
 
     private CompareReportWriter() {}
 
@@ -93,7 +91,7 @@ public class CompareReportWriter {
         sb.append(blockTitle(cls, title, entries.size()));
         sb.append("<table class=\"diff\"><thead><tr><th>文件</th><th>所在目录</th></tr></thead><tbody>");
         for (FileCompare.FileEntry e : entries) {
-            sb.append("<tr><td>").append(esc(e.getPath())).append("</td><td>")
+            sb.append("<tr><td>").append(esc(baseName(e.getPath()))).append("</td><td>")
                     .append(esc(orRoot(e.getDir()))).append("</td></tr>");
         }
         sb.append("</tbody></table>");
@@ -105,7 +103,7 @@ public class CompareReportWriter {
         sb.append(blockTitle("changed", "内容不同的文件(非Excel,按md5对比)", entries.size()));
         sb.append("<table class=\"diff\"><thead><tr><th>文件</th><th>所在目录</th><th>基准侧 A md5</th><th>目标侧 B md5</th></tr></thead><tbody>");
         for (FileCompare.FileEntry e : entries) {
-            sb.append("<tr><td>").append(esc(e.getPath())).append("</td><td>")
+            sb.append("<tr><td>").append(esc(baseName(e.getPath()))).append("</td><td>")
                     .append(esc(orRoot(e.getDir()))).append("</td>")
                     .append("<td class=\"md5\">").append(esc(e.getMd5A())).append("</td>")
                     .append("<td class=\"md5\">").append(esc(e.getMd5B())).append("</td></tr>");
@@ -113,14 +111,21 @@ public class CompareReportWriter {
         sb.append("</tbody></table>");
     }
 
-    /** 模块三:文件内容对比(Excel 数据行)。按文件维度默认折叠 */
+    /** 取文件名(去掉相对目录部分) */
+    private static String baseName(String path) {
+        if (path == null) return "";
+        int i = path.lastIndexOf('/');
+        return i < 0 ? path : path.substring(i + 1);
+    }
+
+    /** 模块三:文件内容对比(Excel 数据行,细化到单元格)。按文件维度默认折叠 */
     private static void writeContentModule(StringBuilder sb, ContentCompare content) {
         sb.append("<h2>模块三 · 文件内容对比(Excel 数据行)</h2>");
         if (content.isEmpty()) {
             sb.append(okBlock("文件内容一致,无差异。"));
             return;
         }
-        sb.append("<p class=\"hint\">每个文件默认折叠,点击文件名展开查看明细。</p>");
+        sb.append("<p class=\"hint\">每个文件默认折叠,点击文件名展开查看明细。更新行单元格内呈现 旧值 → 新值。</p>");
         for (FileContentDiff fd : content.getFiles()) {
             if (fd.isEmpty()) continue;
             // <details> 默认折叠(不加 open)
@@ -128,6 +133,9 @@ public class CompareReportWriter {
                     .append(esc(fd.getPath()))
                     .append("<span class=\"summary\">").append(esc(fileSummary(fd))).append("</span>")
                     .append("</summary>");
+            if (fd.getError() != null) {
+                sb.append("<p class=\"sheets missing\">").append(esc(fd.getError())).append("</p>");
+            }
             if (!fd.getSheetsMissingInTarget().isEmpty()) {
                 sb.append("<p class=\"sheets missing\">目标侧缺少的 sheet：")
                         .append(esc(String.join("、", fd.getSheetsMissingInTarget()))).append("</p>");
@@ -139,41 +147,43 @@ public class CompareReportWriter {
             for (SheetContentDiff sd : fd.getSheets()) {
                 if (sd.isEmpty()) continue;
                 sb.append("<h4 class=\"sheet\">sheet：").append(esc(sd.getSheet())).append("</h4>");
-                Set<Integer> extraNums = rowNums(sd.getRowsExtraInTarget());
-                Set<Integer> missingNums = rowNums(sd.getRowsMissingInTarget());
-                rowTable(sb, "目标侧缺少的数据行", "missing", sd.getRowsMissingInTarget(), sd.getHeaderA(), extraNums);
-                rowTable(sb, "目标侧多出的数据行", "extra", sd.getRowsExtraInTarget(), sd.getHeaderB(), missingNums);
+                rowTable(sb, sd);
             }
             sb.append("</details>");
         }
     }
 
-    /** 文件差异摘要:缺少/多出 sheet 数、缺少/多出行数 */
+    /** 文件差异摘要:缺少/多出 sheet 数、新增/删除/更新行数 */
     private static String fileSummary(FileContentDiff fd) {
-        int miss = 0;
-        int extra = 0;
+        int added = 0;
+        int deleted = 0;
+        int updated = 0;
         for (SheetContentDiff sd : fd.getSheets()) {
-            miss += sd.getRowsMissingInTarget().size();
-            extra += sd.getRowsExtraInTarget().size();
+            for (RowDiff r : sd.getRows()) {
+                if (ContentCompare.ADDED.equals(r.getStatus())) added++;
+                else if (ContentCompare.DELETED.equals(r.getStatus())) deleted++;
+                else updated++;
+            }
         }
         StringBuilder s = new StringBuilder();
         if (!fd.getSheetsMissingInTarget().isEmpty()) s.append("缺少 sheet ").append(fd.getSheetsMissingInTarget().size()).append(" · ");
         if (!fd.getSheetsExtraInTarget().isEmpty()) s.append("多出 sheet ").append(fd.getSheetsExtraInTarget().size()).append(" · ");
-        if (miss > 0) s.append("缺少 ").append(miss).append(" 行 · ");
-        if (extra > 0) s.append("多出 ").append(extra).append(" 行 · ");
+        if (added > 0) s.append("新增 ").append(added).append(" 行 · ");
+        if (deleted > 0) s.append("删除 ").append(deleted).append(" 行 · ");
+        if (updated > 0) s.append("更新 ").append(updated).append(" 行 · ");
         String out = s.toString();
         return out.endsWith(" · ") ? out.substring(0, out.length() - 3) : out;
     }
 
-    /** 把整行(单元格以 CELL_SEP 分隔)拆成多列表格,首列状态(新增/删除/更新)+行号,表头取该 sheet 首行 */
-    private static void rowTable(StringBuilder sb, String title, String cls, List<RowLine> rows,
-                                 List<String> headers, Set<Integer> peerRowNums) {
+    /** 单 sheet 一张表:状态 | 行号 | 各列;更新单元格呈现 旧值 → 新值 */
+    private static void rowTable(StringBuilder sb, SheetContentDiff sd) {
+        List<RowDiff> rows = sd.getRows();
         if (rows == null || rows.isEmpty()) return;
-        sb.append(blockTitle(cls, title, rows.size()));
+        List<String> headers = sd.getHeader();
         int limit = Math.min(rows.size(), MAX_ROWS);
         int maxCols = headers == null ? 0 : headers.size();
         for (int i = 0; i < limit; i++) {
-            maxCols = Math.max(maxCols, rows.get(i).getContent().split(CELL_SEP_RE, -1).length);
+            maxCols = Math.max(maxCols, rows.get(i).getCells().size());
         }
         sb.append("<table class=\"diff rows\"><thead><tr><th>状态</th><th>行号</th>");
         for (int c = 0; c < maxCols; c++) {
@@ -183,15 +193,17 @@ public class CompareReportWriter {
         }
         sb.append("</tr></thead><tbody>");
         for (int i = 0; i < limit; i++) {
-            RowLine row = rows.get(i);
-            boolean updated = peerRowNums != null && peerRowNums.contains(row.getRowNum());
-            String stCls = updated ? "st-upd" : ("missing".equals(cls) ? "st-del" : "st-add");
-            String stLabel = updated ? "更新" : ("missing".equals(cls) ? "删除" : "新增");
-            String[] cells = row.getContent().split(CELL_SEP_RE, -1);
+            RowDiff row = rows.get(i);
+            String stCls;
+            String stLabel;
+            if (ContentCompare.ADDED.equals(row.getStatus())) { stCls = "st-add"; stLabel = "新增"; }
+            else if (ContentCompare.DELETED.equals(row.getStatus())) { stCls = "st-del"; stLabel = "删除"; }
+            else { stCls = "st-upd"; stLabel = "更新"; }
             sb.append("<tr><td class=\"st ").append(stCls).append("\">").append(stLabel).append("</td>");
             sb.append("<td class=\"idx\">").append(row.getRowNum()).append("</td>");
+            List<CellDiff> cells = row.getCells();
             for (int c = 0; c < maxCols; c++) {
-                sb.append("<td>").append(c < cells.length ? esc(cells[c]) : "").append("</td>");
+                sb.append("<td>").append(renderCell(row.getStatus(), c < cells.size() ? cells.get(c) : null)).append("</td>");
             }
             sb.append("</tr>");
         }
@@ -201,10 +213,18 @@ public class CompareReportWriter {
         }
     }
 
-    private static Set<Integer> rowNums(List<RowLine> rows) {
-        Set<Integer> s = new HashSet<>();
-        for (RowLine r : rows) s.add(r.getRowNum());
-        return s;
+    /** 单元格渲染:新增取 b,删除取 a,更新且变化呈现 旧 → 新,否则取值 */
+    private static String renderCell(String status, CellDiff cell) {
+        if (cell == null) return "";
+        if (ContentCompare.ADDED.equals(status)) return esc(cell.getB());
+        if (ContentCompare.DELETED.equals(status)) return esc(cell.getA());
+        // UPDATED
+        if (cell.isChanged()) {
+            return "<span class=\"old\">" + esc(cell.getA()) + "</span>"
+                    + "<span class=\"arrow\"> → </span>"
+                    + "<span class=\"new\">" + esc(cell.getB()) + "</span>";
+        }
+        return esc(cell.getB());
     }
 
     private static void metaRow(StringBuilder sb, String k, String v) {
@@ -255,6 +275,7 @@ public class CompareReportWriter {
                 + "td.st{font-family:inherit;font-weight:600;text-align:center;white-space:nowrap;}"
                 + "td.st-del{color:#e6a23c;}td.st-add{color:#67c23a;}td.st-upd{color:#409eff;}"
                 + "td.md5{font-family:monospace;font-size:12px;color:#909399;}"
+                + ".old{color:#f56c6c;text-decoration:line-through;}.new{color:#67c23a;}.arrow{color:#909399;}"
                 + "details.file-details{background:#fff;border:1px solid #ebeef5;border-radius:4px;margin:8px 0;padding:6px 12px;}"
                 + "details.file-details>summary{cursor:pointer;font-weight:600;font-size:15px;list-style:revert;}"
                 + "details.file-details>summary .summary{margin-left:12px;color:#909399;font-weight:400;font-size:12px;}"

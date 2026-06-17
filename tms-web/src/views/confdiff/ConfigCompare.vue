@@ -131,163 +131,56 @@
         <el-descriptions-item label="目标侧 B">{{ result.refB }}</el-descriptions-item>
         <el-descriptions-item label="实际 commit B">{{ result.resolvedCommitB }}</el-descriptions-item>
       </el-descriptions>
-      <div class="hint">以下均以基准侧 A 为基准，描述目标侧 B 相对 A 缺少 / 多出了什么。</div>
+      <div class="hint">仅展示差异概览，完整明细请点击上方「下载报告」查看。</div>
 
-      <!-- 模块一:目录对比 -->
-      <div class="module">
-        <div class="module-title">模块一 · 目录对比</div>
-        <div v-if="dirEmpty" class="ok">✓ 目录结构一致</div>
-        <template v-else>
-          <diff-block label="目标侧缺少的目录" type="missing" :count="result.dirCompare.missingInTarget.length">
-            <div v-for="e in result.dirCompare.missingInTarget" :key="'dm' + e.path" class="entry">
-              <span class="path">{{ e.path }}</span>
-              <span class="ctx">父目录：{{ e.parent || '(根目录)' }}</span>
-            </div>
-          </diff-block>
-          <diff-block label="目标侧多出的目录" type="extra" :count="result.dirCompare.extraInTarget.length">
-            <div v-for="e in result.dirCompare.extraInTarget" :key="'de' + e.path" class="entry">
-              <span class="path">{{ e.path }}</span>
-              <span class="ctx">父目录：{{ e.parent || '(根目录)' }}</span>
-            </div>
-          </diff-block>
-        </template>
-      </div>
+      <!-- 三维度差异概览 -->
+      <el-table :data="dimensions" size="small" border class="dim-table">
+        <el-table-column prop="name" label="对比维度" width="200" />
+        <el-table-column label="结果" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.diff ? 'warning' : 'success'" size="small">{{ row.diff ? '有差异' : '一致' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="差异概况">
+          <template #default="{ row }">{{ row.detail || '—' }}</template>
+        </el-table-column>
+      </el-table>
 
-      <!-- 模块二:文件对比 -->
-      <div class="module">
-        <div class="module-title">模块二 · 文件对比</div>
-        <div v-if="fileEmpty" class="ok">✓ 文件清单一致</div>
-        <template v-else>
-          <diff-block label="目标侧缺少的文件" type="missing" :count="result.fileCompare.missingInTarget.length">
-            <div v-for="e in result.fileCompare.missingInTarget" :key="'fm' + e.path" class="entry">
-              <span class="path">{{ e.path }}</span>
-              <span class="ctx">所在目录：{{ e.dir || '(根目录)' }}</span>
-            </div>
-          </diff-block>
-          <diff-block label="目标侧多出的文件" type="extra" :count="result.fileCompare.extraInTarget.length">
-            <div v-for="e in result.fileCompare.extraInTarget" :key="'fe' + e.path" class="entry">
-              <span class="path">{{ e.path }}</span>
-              <span class="ctx">所在目录：{{ e.dir || '(根目录)' }}</span>
-            </div>
-          </diff-block>
-          <diff-block label="内容不同的文件(非Excel,按md5对比)" type="changed" :count="result.fileCompare.contentChanged.length">
-            <div v-for="e in result.fileCompare.contentChanged" :key="'fc' + e.path" class="entry entry-md5">
-              <span class="path">{{ e.path }}</span>
-              <span class="ctx">所在目录：{{ e.dir || '(根目录)' }}</span>
-              <span class="md5" v-if="e.md5A || e.md5B">A: {{ e.md5A }} → B: {{ e.md5B }}</span>
-            </div>
-          </diff-block>
-        </template>
-      </div>
-
-      <!-- 模块三:文件内容对比 -->
-      <div class="module">
-        <div class="module-title">模块三 · 文件内容对比（Excel 数据行）</div>
-        <div v-if="contentEmpty" class="ok">✓ 文件内容一致</div>
-        <el-collapse v-else v-model="activeContentFiles" class="content-collapse">
-          <el-collapse-item v-for="fd in result.contentCompare.files" :key="fd.path" :name="fd.path">
-            <template #title>
-              <span class="cf-title">📄 {{ fd.path }}</span>
-              <span class="cf-sum">{{ fileSummary(fd) }}</span>
-            </template>
-            <div v-if="fd.sheetsMissingInTarget.length" class="sheet-line">
-              <el-tag size="small" type="warning">缺少 sheet</el-tag>
-              <span>{{ fd.sheetsMissingInTarget.join('、') }}</span>
-            </div>
-            <div v-if="fd.sheetsExtraInTarget.length" class="sheet-line">
-              <el-tag size="small" type="success">多出 sheet</el-tag>
-              <span>{{ fd.sheetsExtraInTarget.join('、') }}</span>
-            </div>
-            <div v-for="sd in fd.sheets" :key="fd.path + '#' + sd.sheet" class="sheet-block">
-              <div class="sheet-name">sheet：{{ sd.sheet }}</div>
-              <diff-block label="目标侧缺少的数据行" type="missing" :count="sd.rowsMissingInTarget.length">
-                <row-table :rows="sd.rowsMissingInTarget" :peer="sd.rowsExtraInTarget" :headers="sd.headerA" kind="missing" />
-              </diff-block>
-              <diff-block label="目标侧多出的数据行" type="extra" :count="sd.rowsExtraInTarget.length">
-                <row-table :rows="sd.rowsExtraInTarget" :peer="sd.rowsMissingInTarget" :headers="sd.headerB" kind="extra" />
-              </diff-block>
-            </div>
-          </el-collapse-item>
-        </el-collapse>
+      <!-- 文件清单变化:目标侧缺少/多出/内容不同的文件 -->
+      <div v-if="!fileEmpty" class="file-changes">
+        <div v-if="result.fileCompare.missingInTarget.length" class="fc-group">
+          <div class="fc-label del">− 目标侧缺少的文件（{{ result.fileCompare.missingInTarget.length }}）</div>
+          <div v-for="e in result.fileCompare.missingInTarget" :key="'fm' + e.path" class="fc-item">
+            <span class="fname">{{ fileName(e.path) }}</span>
+            <span class="ctx">目录：{{ e.dir || '(根目录)' }}</span>
+          </div>
+        </div>
+        <div v-if="result.fileCompare.extraInTarget.length" class="fc-group">
+          <div class="fc-label add">＋ 目标侧多出的文件（{{ result.fileCompare.extraInTarget.length }}）</div>
+          <div v-for="e in result.fileCompare.extraInTarget" :key="'fe' + e.path" class="fc-item">
+            <span class="fname">{{ fileName(e.path) }}</span>
+            <span class="ctx">目录：{{ e.dir || '(根目录)' }}</span>
+          </div>
+        </div>
+        <div v-if="result.fileCompare.contentChanged.length" class="fc-group">
+          <div class="fc-label chg">≠ 内容不同的文件（非Excel，按md5对比，{{ result.fileCompare.contentChanged.length }}）</div>
+          <div v-for="e in result.fileCompare.contentChanged" :key="'fc' + e.path" class="fc-item">
+            <span class="fname">{{ fileName(e.path) }}</span>
+            <span class="ctx">目录：{{ e.dir || '(根目录)' }}</span>
+          </div>
+        </div>
       </div>
     </el-card>
   </div>
 </template>
 
 <script>
-import { ref, reactive, onMounted, onUnmounted, computed, h } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { confCompareApi, confProjectApi } from '@/api/confdiff'
 
-// 后端整行单元格分隔符(0x01)
-const CELL_SEP = String.fromCharCode(1)
-
-// 差异块子组件:有内容才展示,标题带数量与方向符号
-const DiffBlock = {
-  name: 'DiffBlock',
-  props: {
-    label: String,
-    count: { type: Number, default: 0 },
-    type: { type: String, default: 'missing' } // missing | extra | changed
-  },
-  setup(props, { slots }) {
-    const colorMap = { missing: '#e6a23c', extra: '#67c23a', changed: '#f56c6c' }
-    const signMap = { missing: '−', extra: '＋', changed: '≠' }
-    return () => {
-      if (!props.count) return null
-      return h('div', { class: 'diff-block' }, [
-        h('div', { class: 'diff-block-title', style: { color: colorMap[props.type] } },
-          `${signMap[props.type]} ${props.label} (${props.count})`),
-        h('div', { class: 'diff-block-body' }, slots.default ? slots.default() : [])
-      ])
-    }
-  }
-}
-
-// 数据行表格:首列真实 Excel 行号,表头取该 sheet 首行,并按对侧同行号判定 新增/删除/更新
-const RowTable = {
-  name: 'RowTable',
-  props: {
-    rows: { type: Array, default: () => [] },
-    peer: { type: Array, default: () => [] },
-    headers: { type: Array, default: () => [] },
-    kind: { type: String, default: 'missing' } // missing(基准侧有) | extra(目标侧有)
-  },
-  setup(props) {
-    return () => {
-      if (!props.rows.length) return null
-      const peerNums = new Set((props.peer || []).map((r) => r.rowNum))
-      const matrix = props.rows.map((r) => ({
-        rowNum: r.rowNum,
-        cells: String(r.content != null ? r.content : '').split(CELL_SEP),
-        updated: peerNums.has(r.rowNum)
-      }))
-      const maxCols = matrix.reduce((m, r) => Math.max(m, r.cells.length), (props.headers || []).length)
-      const colName = (i) => {
-        const hs = props.headers || []
-        return i < hs.length && hs[i] ? hs[i] : '列' + (i + 1)
-      }
-      const labelOf = (u) => (u ? '更新' : props.kind === 'missing' ? '删除' : '新增')
-      const clsOf = (u) => (u ? 'st-upd' : props.kind === 'missing' ? 'st-del' : 'st-add')
-      const header = h('tr', [
-        h('th', '状态'), h('th', '行号'),
-        ...Array.from({ length: maxCols }, (_, i) => h('th', colName(i)))
-      ])
-      const body = matrix.map((r) =>
-        h('tr', [
-          h('td', { class: 'st ' + clsOf(r.updated) }, labelOf(r.updated)),
-          h('td', { class: 'idx' }, r.rowNum),
-          ...Array.from({ length: maxCols }, (_, ci) => h('td', r.cells[ci] != null ? r.cells[ci] : ''))
-        ])
-      )
-      return h('table', { class: 'row-table' }, [h('thead', [header]), h('tbody', body)])
-    }
-  }
-}
-
 export default {
   name: 'ConfigCompare',
-  components: { DiffBlock, RowTable },
   setup() {
     const projects = ref([])
     const branches = ref([])
@@ -298,29 +191,17 @@ export default {
     const loadingCommitsB = ref(false)
     const running = ref(false)
     const result = ref(null)
-    const activeContentFiles = ref([]) // 模块三按文件折叠,默认全部折叠
     const history = ref([])
     const formRef = ref(null)
 
-    // 设置结果并默认折叠所有文件内容块
     const setResult = (data) => {
       result.value = data
-      activeContentFiles.value = []
     }
 
-    const fileSummary = (fd) => {
-      let miss = 0
-      let extra = 0
-      ;(fd.sheets || []).forEach((s) => {
-        miss += (s.rowsMissingInTarget || []).length
-        extra += (s.rowsExtraInTarget || []).length
-      })
-      const parts = []
-      if (fd.sheetsMissingInTarget && fd.sheetsMissingInTarget.length) parts.push(`缺少 sheet ${fd.sheetsMissingInTarget.length}`)
-      if (fd.sheetsExtraInTarget && fd.sheetsExtraInTarget.length) parts.push(`多出 sheet ${fd.sheetsExtraInTarget.length}`)
-      if (miss) parts.push(`缺少 ${miss} 行`)
-      if (extra) parts.push(`多出 ${extra} 行`)
-      return parts.join(' · ')
+    const fileName = (p) => {
+      if (!p) return ''
+      const i = p.lastIndexOf('/')
+      return i < 0 ? p : p.slice(i + 1)
     }
     const prepare = reactive({ status: null, message: '' }) // 项目准备状态
     let pollTimer = null
@@ -556,8 +437,6 @@ export default {
       if (result.value?.reportUrl) window.open(result.value.reportUrl, '_blank')
     }
 
-    const rowText = (row) => String(row).split(CELL_SEP).join(' | ')
-
     const dirEmpty = computed(() => {
       const d = result.value?.dirCompare
       return !d || ((d.missingInTarget || []).length === 0 && (d.extraInTarget || []).length === 0)
@@ -571,17 +450,44 @@ export default {
       return !c || (c.files || []).length === 0
     })
 
+    // 三维度差异概览
+    const dimensions = computed(() => {
+      const r = result.value
+      if (!r) return []
+      const d = r.dirCompare || {}
+      const f = r.fileCompare || {}
+      const c = r.contentCompare || {}
+      const n = (x) => (x || []).length
+      return [
+        {
+          name: '目录对比',
+          diff: !dirEmpty.value,
+          detail: dirEmpty.value ? '' : `缺少 ${n(d.missingInTarget)} · 多出 ${n(d.extraInTarget)}`
+        },
+        {
+          name: '文件对比',
+          diff: !fileEmpty.value,
+          detail: fileEmpty.value ? '' : `缺少 ${n(f.missingInTarget)} · 多出 ${n(f.extraInTarget)} · 内容不同 ${n(f.contentChanged)}`
+        },
+        {
+          name: '文件内容对比（Excel 数据行）',
+          diff: !contentEmpty.value,
+          detail: contentEmpty.value ? '' : `${n(c.files)} 个文件存在行差异`
+        }
+      ]
+    })
+
     onMounted(loadProjects)
     onUnmounted(() => { stopPoll(); stopResultPoll() })
 
     return {
       projects, branches, commitsA, commitsB,
       loadingBranches, loadingCommitsA, loadingCommitsB,
-      running, result, history, activeContentFiles, formRef, form, rules,
-      prepare, ready, doPrepare, fileSummary, commitLabel,
+      running, result, history, formRef, form, rules,
+      prepare, ready, doPrepare, commitLabel, fileName, dimensions,
       loadProjects, onProjectChange, loadBranches, onBranchChange,
       loadHistory, viewHistory,
-      run, openReport, rowText, dirEmpty, fileEmpty, contentEmpty
+      run, openReport, dirEmpty, fileEmpty, contentEmpty
     }
   }
 }
@@ -594,6 +500,17 @@ export default {
 .result-header .elapsed { color: #909399; font-size: 13px; }
 .meta { margin-bottom: 8px; }
 .hint { color: #909399; font-size: 13px; margin: 8px 0 16px; }
+
+.dim-table { margin-bottom: 16px; }
+.file-changes { margin-top: 4px; }
+.fc-group { margin-bottom: 12px; }
+.fc-label { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.fc-label.del { color: #e6a23c; }
+.fc-label.add { color: #67c23a; }
+.fc-label.chg { color: #f56c6c; }
+.fc-item { display: flex; gap: 12px; align-items: baseline; padding: 2px 0 2px 14px; font-size: 13px; }
+.fc-item .fname { color: #303133; font-family: monospace; }
+.fc-item .ctx { color: #909399; font-size: 12px; }
 
 .module { margin-bottom: 20px; border: 1px solid #ebeef5; border-radius: 6px; overflow: hidden; }
 .module-title {
@@ -653,4 +570,7 @@ export default {
 :deep(.row-table td.st-del) { color: #e6a23c; }
 :deep(.row-table td.st-add) { color: #67c23a; }
 :deep(.row-table td.st-upd) { color: #409eff; }
+:deep(.row-table .old) { color: #f56c6c; text-decoration: line-through; }
+:deep(.row-table .new) { color: #67c23a; }
+:deep(.row-table .arrow) { color: #909399; }
 </style>
