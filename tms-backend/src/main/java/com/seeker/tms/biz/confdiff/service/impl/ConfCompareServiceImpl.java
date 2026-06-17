@@ -179,10 +179,13 @@ public class ConfCompareServiceImpl implements ConfCompareService {
         if (result == null) {
             throw new IllegalArgumentException("对比结果不存在或已过期: " + id);
         }
-        // 报告预签名链接可能已过期,基于对象 key 重新生成
+        // 报告预签名链接可能已过期,基于对象 key 重新生成(查看 + 下载)
         if (StrUtil.isNotBlank(result.getReportKey())) {
             try {
                 result.setReportUrl(minioUtil.getUrl(result.getReportKey()));
+                int i = result.getReportKey().lastIndexOf('/');
+                String name = i < 0 ? result.getReportKey() : result.getReportKey().substring(i + 1);
+                result.setReportDownloadUrl(minioUtil.getDownloadUrl(result.getReportKey(), name));
             } catch (Exception e) {
                 log.warn("刷新报告下载链接失败: {}", result.getReportKey());
             }

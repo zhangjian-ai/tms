@@ -8,6 +8,7 @@ import com.seeker.tms.biz.confdiff.entities.compare.ContentCompare.SheetContentD
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.FormulaEvaluator;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -213,12 +214,15 @@ public class ExcelComparator {
         try (FileInputStream in = new FileInputStream(file);
              Workbook wb = WorkbookFactory.create(in)) {
             DataFormatter formatter = new DataFormatter();
+            // 公式单元格取计算值而非公式文本(相对引用会随行号变动,否则插入行会让后续行全部"变化")
+            FormulaEvaluator evaluator = wb.getCreationHelper().createFormulaEvaluator();
+            evaluator.setIgnoreMissingWorkbooks(true); // 外部链接(如 SharePoint)缺失时忽略
             for (int i = 0; i < wb.getNumberOfSheets(); i++) {
                 Sheet sheet = wb.getSheetAt(i);
                 SheetData data = new SheetData();
                 boolean headerTaken = false;
                 for (Row row : sheet) {
-                    String content = rowToString(row, formatter);
+                    String content = rowToString(row, formatter, evaluator);
                     if (!headerTaken) {
                         data.header = splitCells(content);
                         headerTaken = true;
@@ -237,12 +241,11 @@ public class ExcelComparator {
         return new ArrayList<>(Arrays.asList(content.split(String.valueOf(CELL_SEP), -1)));
     }
 
-    private static String rowToString(Row row, DataFormatter formatter) {
+    private static String rowToString(Row row, DataFormatter formatter, FormulaEvaluator evaluator) {
         StringBuilder sb = new StringBuilder();
         short last = row.getLastCellNum();
         for (int c = 0; c < last; c++) {
-            Cell cell = row.getCell(c);
-            sb.append(cell == null ? "" : formatter.formatCellValue(cell).trim());
+            sb.append(cellText(row.getCell(c), formatter, evaluator));
             sb.append(CELL_SEP);
         }
         // 去掉尾部空单元格,避免行尾空列影响比对
@@ -252,5 +255,19 @@ public class ExcelComparator {
             end--;
         }
         return s.substring(0, end);
+    }
+
+    /** 取单元格文本:公式单元格取计算值;计算失败(如外部链接)回退到原始格式化 */
+    private static String cellText(Cell cell, DataFormatter formatter, FormulaEvaluator evaluator) {
+        if (cell == null) return "";
+        try {
+            return formatter.formatCellValue(cell, evaluator).trim();
+        } catch (Exception e) {
+            try {
+                return formatter.formatCellValue(cell).trim();
+            } catch (Exception e2) {
+                return "";
+            }
+        }
     }
 }

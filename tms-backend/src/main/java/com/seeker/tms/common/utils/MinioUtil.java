@@ -111,6 +111,30 @@ public class MinioUtil {
     }
 
     /**
+     * 获取强制下载(另存为)的临时链接:通过 response-content-disposition 让浏览器下载而非内联打开
+     */
+    public String getDownloadUrl(String fileName, String downloadName) {
+        String bucketName = minioConfig.getBucketName();
+        try {
+            minioClient.statObject(StatObjectArgs.builder()
+                    .bucket(bucketName)
+                    .object(fileName).build());
+
+            java.util.Map<String, String> queryParams = new java.util.HashMap<>();
+            queryParams.put("response-content-disposition", "attachment; filename=\"" + downloadName + "\"");
+
+            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+                    .bucket(bucketName)
+                    .object(fileName)
+                    .method(Method.GET)
+                    .extraQueryParams(queryParams)
+                    .expiry(minioConfig.getExpire()).build());
+        } catch (Exception e) {
+            throw new RuntimeException("获取下载链接失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 删除文件
      */
     public void deleteFile(String fileName) {

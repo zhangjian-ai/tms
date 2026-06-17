@@ -96,11 +96,14 @@
             <el-tag v-else :type="row.consistent ? 'success' : 'warning'" size="small">{{ row.consistent ? '一致' : '有差异' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" align="center">
+        <el-table-column label="操作" width="150" align="center">
           <template #default="{ row }">
             <el-button link type="primary" size="small"
               :disabled="row.status === 'RUNNING' || row.status === 'FAILED' || row.consistent"
-              @click.stop="viewHistory(row)">查看报告</el-button>
+              @click.stop="viewHistory(row)">查看</el-button>
+            <el-button link type="primary" size="small"
+              :disabled="row.status === 'RUNNING' || row.status === 'FAILED' || row.consistent"
+              @click.stop="downloadHistory(row)">下载</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -120,7 +123,8 @@
             {{ result.consistent ? '完全一致' : '存在差异' }}
           </el-tag>
           <span class="elapsed">耗时 {{ result.elapsedMs }} ms</span>
-          <el-button v-if="result.reportUrl" type="primary" link @click="openReport">下载报告</el-button>
+          <el-button v-if="result.reportUrl" type="primary" link @click="openReport">查看报告</el-button>
+          <el-button v-if="result.reportDownloadUrl" type="primary" link @click="downloadReport">下载报告</el-button>
         </div>
       </template>
 
@@ -437,6 +441,32 @@ export default {
       if (result.value?.reportUrl) window.open(result.value.reportUrl, '_blank')
     }
 
+    // 触发浏览器下载(链接自带 attachment 头,强制另存)
+    const triggerDownload = (url) => {
+      const a = document.createElement('a')
+      a.href = url
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    }
+
+    const downloadReport = () => {
+      if (result.value?.reportDownloadUrl) triggerDownload(result.value.reportDownloadUrl)
+    }
+
+    // 历史结果:拉取后强制下载报告
+    const downloadHistory = async (row) => {
+      try {
+        const res = await confCompareApi.result(row.id)
+        const url = res.code === 0 && res.data ? res.data.reportDownloadUrl : null
+        if (url) triggerDownload(url)
+        else ElMessage.warning(res.msg || '报告不存在或已过期')
+      } catch (e) {
+        ElMessage.error('下载报告失败：' + (e?.message || ''))
+      }
+    }
+
     const dirEmpty = computed(() => {
       const d = result.value?.dirCompare
       return !d || ((d.missingInTarget || []).length === 0 && (d.extraInTarget || []).length === 0)
@@ -486,8 +516,8 @@ export default {
       running, result, history, formRef, form, rules,
       prepare, ready, doPrepare, commitLabel, fileName, dimensions,
       loadProjects, onProjectChange, loadBranches, onBranchChange,
-      loadHistory, viewHistory,
-      run, openReport, dirEmpty, fileEmpty, contentEmpty
+      loadHistory, viewHistory, downloadHistory,
+      run, openReport, downloadReport, dirEmpty, fileEmpty, contentEmpty
     }
   }
 }

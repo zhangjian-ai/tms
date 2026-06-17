@@ -45,6 +45,8 @@ public class CompareResultVO {
 
     /** 不一致时生成的报告文件下载链接(预签名,可能过期,回看时会刷新) */
     private String reportUrl;
+    /** 报告文件强制下载(另存为)链接 */
+    private String reportDownloadUrl;
     /** 报告文件在 MinIO 的对象 key(用于回看时重新生成下载链接) */
     private String reportKey;
     /** 耗时(毫秒) */

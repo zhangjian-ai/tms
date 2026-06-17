@@ -130,6 +130,7 @@ public class ConfCompareExecutor {
             minioUtil.uploadFile(key, report, "text/html; charset=utf-8");
             result.setReportKey(key);
             result.setReportUrl(minioUtil.getUrl(key));
+            result.setReportDownloadUrl(minioUtil.getDownloadUrl(key, baseName(key)));
         } catch (Exception e) {
             log.error("生成对比报告失败", e);
         }
@@ -137,6 +138,12 @@ public class ConfCompareExecutor {
 
     private String safe(String ref) {
         return ref.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
+    /** 取对象 key 的文件名部分,作为下载文件名 */
+    private String baseName(String key) {
+        int i = key.lastIndexOf('/');
+        return i < 0 ? key : key.substring(i + 1);
     }
 
     /** 解析对比工作区根目录(项目内临时目录),不存在则创建 */
