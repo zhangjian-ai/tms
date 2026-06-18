@@ -105,9 +105,9 @@ public class ConfCompareExecutor {
         result.setDirCompare(DirFileComparator.diffDirs(snapA, snapB));
         result.setFileCompare(DirFileComparator.diffFiles(snapA, snapB));
 
-        // 模块三:文件内容对比(共有 excel 文件的行级差异)
+        // 模块三:文件内容对比(共有 excel 文件,md5 不同才解析逐行对比)
         ContentCompare content = new ContentCompare();
-        for (String rel : DirFileComparator.commonExcelFiles(snapA, snapB)) {
+        for (String rel : DirFileComparator.changedExcelFiles(snapA, snapB)) {
             FileContentDiff fd = ExcelComparator.diff(new File(snapA, rel), new File(snapB, rel), rel);
             if (!fd.isEmpty()) {
                 content.getFiles().add(fd);

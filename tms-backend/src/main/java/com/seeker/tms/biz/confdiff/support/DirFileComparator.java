@@ -57,13 +57,17 @@ public class DirFileComparator {
         return cmp;
     }
 
-    /** 两侧共有的 excel 文件相对路径 */
-    public static List<String> commonExcelFiles(File rootA, File rootB) {
+    /** 两侧共有、且 md5 不同的 excel 文件相对路径(md5 相同则跳过行级对比以加速) */
+    public static List<String> changedExcelFiles(File rootA, File rootB) {
         Set<String> a = relativeFiles(rootA);
         Set<String> b = relativeFiles(rootB);
         List<String> result = new ArrayList<>();
         for (String rel : a) {
-            if (b.contains(rel) && isExcel(rel)) result.add(rel);
+            if (!b.contains(rel) || !isExcel(rel)) continue;
+            // 先比 md5:一致说明文件完全相同,无需解析+逐行对比
+            if (!md5(new File(rootA, rel)).equals(md5(new File(rootB, rel)))) {
+                result.add(rel);
+            }
         }
         return result;
     }
