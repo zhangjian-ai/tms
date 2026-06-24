@@ -18,8 +18,6 @@ import java.util.List;
  */
 public class CompareReportWriter {
 
-    /** 每类行最多输出条数,防止超大报告 */
-    private static final int MAX_ROWS = 1000;
     private static final String ROOT = "(根目录)";
 
     private CompareReportWriter() {}
@@ -125,7 +123,7 @@ public class CompareReportWriter {
             sb.append(okBlock("文件内容一致,无差异。"));
             return;
         }
-        sb.append("<p class=\"hint\">每个文件默认折叠,点击文件名展开查看明细。更新行单元格内呈现 旧值 → 新值。</p>");
+        sb.append("<p class=\"hint\">每个文件默认折叠,点击文件名展开查看明细。更新行单元格内呈现 旧值 → 新值。删除行的行号为该行在基准文件(A)中的行号。</p>");
         for (FileContentDiff fd : content.getFiles()) {
             if (fd.isEmpty()) continue;
             // <details> 默认折叠(不加 open)
@@ -175,15 +173,14 @@ public class CompareReportWriter {
         return out.endsWith(" · ") ? out.substring(0, out.length() - 3) : out;
     }
 
-    /** 单 sheet 一张表:状态 | 行号 | 各列;更新单元格呈现 旧值 → 新值 */
+    /** 单 sheet 一张表:状态 | 行号 | 各列;更新单元格呈现 旧值 → 新值。展示全部差异行,不省略 */
     private static void rowTable(StringBuilder sb, SheetContentDiff sd) {
         List<RowDiff> rows = sd.getRows();
         if (rows == null || rows.isEmpty()) return;
         List<String> headers = sd.getHeader();
-        int limit = Math.min(rows.size(), MAX_ROWS);
         int maxCols = headers == null ? 0 : headers.size();
-        for (int i = 0; i < limit; i++) {
-            maxCols = Math.max(maxCols, rows.get(i).getCells().size());
+        for (RowDiff r : rows) {
+            maxCols = Math.max(maxCols, r.getCells().size());
         }
         sb.append("<table class=\"diff rows\"><thead><tr><th>状态</th><th>行号</th>");
         for (int c = 0; c < maxCols; c++) {
@@ -192,8 +189,7 @@ public class CompareReportWriter {
             sb.append("<th>").append(esc(h)).append("</th>");
         }
         sb.append("</tr></thead><tbody>");
-        for (int i = 0; i < limit; i++) {
-            RowDiff row = rows.get(i);
+        for (RowDiff row : rows) {
             String stCls;
             String stLabel;
             if (ContentCompare.ADDED.equals(row.getStatus())) { stCls = "st-add"; stLabel = "新增"; }
@@ -208,9 +204,6 @@ public class CompareReportWriter {
             sb.append("</tr>");
         }
         sb.append("</tbody></table>");
-        if (rows.size() > limit) {
-            sb.append("<p class=\"more\">…其余 ").append(rows.size() - limit).append(" 行已省略</p>");
-        }
     }
 
     /** 单元格渲染:新增取 b,删除取 a,更新且变化呈现 旧 → 新,否则取值 */
