@@ -384,7 +384,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         return failedCnt.get();
     }
 
-    /** 单模块提取：流式调用，每解析出一个测试点立即挂树并推送 */
+    /** 单模块提取：流式调用，每解析出一个测试点立即挂树并推送；失败重试 1 次 */
     private void extractModulePoints(String wsKey, Integer taskId, XMindNode root,
                                      OutlineVO.ModuleNode module,
                                      String summary, String docText) {
@@ -397,21 +397,47 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         params.put("summary", summary);
         params.put("doc", docText);
 
+        String system = PromptLoader.load("extract_module_system");
+        String user = PromptLoader.loadWithParams("extract_module_user", params);
         Object lock = getTaskLock(taskId);
-        callLlmStreaming(
-                PromptLoader.load("extract_module_system"),
-                PromptLoader.loadWithParams("extract_module_user", params),
-                (jsonObj) -> {
+
+        // 失败重试 1 次：限流/瞬态网络抖动场景能自愈。
+        // 注意：0 个测试点不视为失败（该章节可能确实无测试点），仅在异常时重试并最终抛出。
+        int maxAttempts = 2;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            // 记录本次尝试新增的测试点 id，重试前据此清理，避免与下一次结果叠加
+            List<String> addedThisAttempt = new ArrayList<>();
+            try {
+                callLlmStreaming(system, user, (jsonObj) -> {
                     try {
                         synchronized (lock) {
                             String newPointId = addPointToTree(root, jsonObj);
-                            TestGenWebSocketHandler.sendPointAdded(wsKey, root, newPointId);
+                            if (newPointId != null) {
+                                addedThisAttempt.add(newPointId);
+                                TestGenWebSocketHandler.sendPointAdded(wsKey, root, newPointId);
+                            }
                         }
                     } catch (Exception ex) {
                         log.warn("处理章节[{}]单个测试点失败，跳过", moduleName, ex);
                     }
+                });
+                // 流式正常结束即视为成功（含 0 个测试点的合法情况）
+                return;
+            } catch (Exception ex) {
+                log.warn("章节[{}] 第 {} 次提取失败：{}", moduleName, attempt, ex.getMessage());
+                if (attempt >= maxAttempts) {
+                    throw new RuntimeException("章节[" + moduleName + "]测试点提取失败：" + ex.getMessage(), ex);
                 }
-        );
+                // 重试前清空本次已写入的测试点并刷新前端，再退避
+                synchronized (lock) {
+                    for (String pid : addedThisAttempt) {
+                        removeNodeById(root, pid);
+                    }
+                }
+                TestGenWebSocketHandler.sendPointsGenerated(wsKey, root);
+                try { Thread.sleep(1500); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            }
+        }
     }
 
     /**
@@ -467,6 +493,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         String summary = (outline != null && outline.getSummary() != null) ? outline.getSummary() : "";
         Map<String, String> params = new HashMap<>();
         params.put("summary", summary);
+        params.put("outline", buildOutlineText(outline));
         params.put("points", JSON.toJSONString(points));
         params.put("doc", truncatedDoc);
 
@@ -492,8 +519,27 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         }
     }
 
-    /** 收集所有 point 节点的 id/type/module/content 视图，给精修 agent 使用 */
-    private List<Map<String, String>> collectPointsFull(XMindNode root) {
+    /** 把大纲格式化为可读文本，供精修 agent 严格按章节核验（只在大纲范围内去重/补漏） */
+    private String buildOutlineText(OutlineVO outline) {
+        if (outline == null || outline.getModules() == null || outline.getModules().isEmpty()) {
+            return "（无大纲信息，请仅依据【现有测试点清单】已出现的模块进行核验，不要新增任何模块）";
+        }
+        StringBuilder sb = new StringBuilder();
+        int i = 1;
+        for (OutlineVO.ModuleNode m : outline.getModules()) {
+            String name = m.getName() == null ? "" : m.getName().trim();
+            if (name.isEmpty()) continue;
+            String scope = m.getScope() == null ? "" : m.getScope().trim();
+            sb.append(i++).append(". ").append(name);
+            if (!scope.isEmpty()) sb.append("：").append(scope);
+            sb.append("\n");
+        }
+        return sb.length() == 0
+                ? "（无大纲信息，请仅依据【现有测试点清单】已出现的模块进行核验，不要新增任何模块）"
+                : sb.toString().trim();
+    }
+
+    /** 收集所有 point 节点的 id/type/module/content 视图，给精修 agent 使用 */    private List<Map<String, String>> collectPointsFull(XMindNode root) {
         List<Map<String, String>> list = new ArrayList<>();
         collectPointsFullRecursive(root, root, list);
         return list;
