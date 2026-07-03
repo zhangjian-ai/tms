@@ -3,6 +3,7 @@ package com.seeker.tms.biz.testgen.controller;
 import com.seeker.tms.biz.testgen.entities.*;
 import com.seeker.tms.biz.testgen.service.AgentChatService;
 import com.seeker.tms.biz.testgen.service.TestGenService;
+import com.seeker.tms.common.entities.PageResult;
 import com.seeker.tms.common.utils.MinioUtil;
 import com.seeker.tms.common.utils.Result;
 import io.swagger.annotations.Api;
@@ -12,7 +13,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -33,10 +33,10 @@ public class TestGenController {
         return Result.success(Map.of("taskId", taskId));
     }
 
-    @ApiOperation("任务列表")
+    @ApiOperation("任务分页列表")
     @GetMapping("/task/list")
-    public Result<List<TestGenTaskPO>> listTasks() {
-        return Result.success(testGenService.listTasks());
+    public Result<PageResult<TestGenTaskPO>> listTasks(TaskQueryDTO query) {
+        return Result.success(testGenService.pageTasks(query));
     }
 
     @ApiOperation("任务信息")

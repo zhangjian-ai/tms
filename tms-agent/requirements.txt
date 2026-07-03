@@ -5,7 +5,6 @@ logzero
 pillow
 PyYAML
 requests
-tidevice==0.12.10
 tornado
 uiautomator2
 bitstring

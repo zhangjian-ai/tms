@@ -1,5 +1,5 @@
 /**
- * scrcpy 二进制控制协议 (v1.24)
+ * scrcpy 二进制控制协议 (v2.7)
  *
  * 通过 scrcpy control socket 向 Android 设备注入输入事件，
  * 绕过 uiautomator2 HTTP RPC，延迟从 200-500ms 降至 10-30ms。
@@ -52,13 +52,14 @@ const VIRTUAL_TOUCH_ID = BigInt('0x1234567887654321') // eslint-disable-line no-
 // ======================== 包构造函数 ========================
 
 /**
- * 构造触摸事件包 (28 bytes)
+ * 构造触摸事件包 (32 bytes, scrcpy 2.x)
  *
  * 布局: type(1) + action(1) + pointerId(8) + x(4) + y(4)
- *       + screenW(2) + screenH(2) + pressure(2) + buttons(4)
+ *       + screenW(2) + screenH(2) + pressure(2) + actionButton(4) + buttons(4)
+ * 注: 2.0 起在 pressure 与 buttons 之间新增 actionButton 字段
  */
 export function buildTouchPacket (action, x, y, screenWidth, screenHeight) {
-  const buf = new ArrayBuffer(28)
+  const buf = new ArrayBuffer(32)
   const v = new DataView(buf)
   let o = 0
   v.setUint8(o, ControlType.INJECT_TOUCH_EVENT); o += 1
@@ -68,7 +69,8 @@ export function buildTouchPacket (action, x, y, screenWidth, screenHeight) {
   v.setInt32(o, clamp(y, 0, screenHeight)); o += 4
   v.setUint16(o, screenWidth); o += 2
   v.setUint16(o, screenHeight); o += 2
-  v.setUint16(o, action === Action.UP ? 0 : 0xFFFF); o += 2
+  v.setUint16(o, action === Action.UP ? 0 : 0xFFFF); o += 2  // pressure (u16 定点)
+  v.setInt32(o, 0); o += 4  // actionButton: 触摸注入恒为 0
   v.setInt32(o, action === Action.UP ? 0 : 1); o += 4  // buttons
   return buf
 }
@@ -107,12 +109,13 @@ export function buildTextPacket (text) {
 }
 
 /**
- * 构造滚动事件包 (25 bytes)
+ * 构造滚动事件包 (21 bytes, scrcpy 2.x)
  *
- * 布局: type(1) + x(4) + y(4) + screenW(2) + screenH(2) + hScroll(4) + vScroll(4) + buttons(4)
+ * 布局: type(1) + x(4) + y(4) + screenW(2) + screenH(2) + hScroll(2) + vScroll(2) + buttons(4)
+ * 注: 2.0 起 hScroll/vScroll 由 int32 改为 int16 定点数([-1,1] 映射到 [-32767,32767])
  */
 export function buildScrollPacket (x, y, screenWidth, screenHeight, hScroll, vScroll) {
-  const buf = new ArrayBuffer(25)
+  const buf = new ArrayBuffer(21)
   const v = new DataView(buf)
   let o = 0
   v.setUint8(o, ControlType.INJECT_SCROLL_EVENT); o += 1
@@ -120,8 +123,8 @@ export function buildScrollPacket (x, y, screenWidth, screenHeight, hScroll, vSc
   v.setInt32(o, clamp(y, 0, screenHeight)); o += 4
   v.setUint16(o, screenWidth); o += 2
   v.setUint16(o, screenHeight); o += 2
-  v.setInt32(o, hScroll); o += 4
-  v.setInt32(o, vScroll); o += 4
+  v.setInt16(o, toI16FixedPoint(hScroll)); o += 2
+  v.setInt16(o, toI16FixedPoint(vScroll)); o += 2
   v.setInt32(o, 0); o += 4  // buttons
   return buf
 }
@@ -232,4 +235,9 @@ export class ScrcpyController {
 
 function clamp (value, min, max) {
   return Math.max(min, Math.min(value, max))
+}
+
+// 将 [-1,1] 的滚动量转为 scrcpy 2.x 的 int16 定点数
+function toI16FixedPoint (value) {
+  return Math.round(clamp(value, -1, 1) * 32767)
 }

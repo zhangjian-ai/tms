@@ -1,3 +1,123 @@
 spring:
   profiles:
     active: local
+
+# application-local.yml
+
+## server
+#server:
+#  port: 8888
+#  servlet:
+#    context-path: /api
+#
+## mp
+#mybatis-plus:
+#  configuration:
+#    default-enum-type-handler: com.baomidou.mybatisplus.core.handlers.MybatisEnumTypeHandler
+##    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+#
+#
+#spring:
+#  mvc:
+#    format:
+#      date-time: yyyy-MM-dd HH:mm:ss
+#
+#  # 数据库连接配置
+#  datasource:
+#    driver-class-name: com.mysql.cj.jdbc.Driver
+#    url: jdbc:mysql://host:port/tms?rewriteBatchedStatements=true&Timezone=Asia/shanghai&useSSl=false&characterEncoding=utf8
+#    username: username
+#    password: password
+#    type: com.alibaba.druid.pool.DruidDataSource
+#
+#    # Druid 专属配置
+#    druid:
+#      initial-size: 5
+#      min-idle: 5
+#      max-active: 20
+#      # 监控配置
+#      stat-view-servlet:
+#        enabled: false
+#        url-pattern: /druid/*
+#        login-username: admin
+#        login-password: admin123
+#      filter:
+#        stat:
+#          enabled: false
+#          slow-sql-millis: 1000  # 定义慢查询阈值(1秒)
+#
+#  redis:
+#    host: host
+#    port: port
+#    password: password
+#    database: 0
+#    timeout: 10000ms  # 连接超时时间（毫秒），增加到10秒
+#    lettuce:
+#      pool:
+#        max-active: 8   # 最大活跃连接数
+#        max-idle: 8     # 最大空闲连接数
+#        min-idle: 2     # 最小空闲连接数
+#        max-wait: 3000ms  # 最大阻塞等待时间，增加到3秒
+#        time-between-eviction-runs: 60000ms  # 空闲连接检测周期（1分钟）
+#      shutdown-timeout: 100ms  # 关闭超时时间
+#      cluster:
+#        refresh:
+#          adaptive: true  # 自适应拓扑刷新
+#          period: 60000ms  # 定期刷新周期
+#
+#  # flyway
+#  flyway:
+#    enabled: true
+#    encoding: UTF-8
+#    locations: classpath:db
+#    baseline-on-migrate: true
+#    baseline-version: 0
+#    table: tms_db_version
+#    validate-on-migrate: false
+#
+#  # 文件上传配置
+#  servlet:
+#    multipart:
+#      max-file-size: 100MB
+#      max-request-size: 200MB
+#
+## 配置事务日志等级为debug
+#logging:
+#  level:
+#    org.springframework.jdbc.support.JdbcTransactionManager: debug
+#    # 忽略 POI 解析 Excel 新函数(如 _xlfn.TEXTAFTER)的公式告警
+#    org.apache.poi.ss.formula: error
+#    # 忽略 Excel 内嵌外部/扩展链接(如 SharePoint URL)无法转 URI 的报错(用 dummy-URI 顶替后继续,直接忽略)
+#    org.apache.poi.openxml4j.opc: 'off'
+#
+#
+## swagger 配置
+## http://localhost:8888/doc.html 访问在线接口文档
+#knife4j:
+#  enable: true
+#  # 生产环境关闭
+#  production: false
+#
+#redis:
+#  device:
+#    status-prefix: "ds_"
+#    holder-prefix: "dh_"
+#
+#minio:
+#  endpoint: http://host:port
+#  access-key: username
+#  secret-key: password
+#  bucket-name: bucket_name
+#  expire: 300
+#
+## 用例生成 Agent 模型配置
+#testgen:
+#  thinking:
+#    base-url: base-url
+#    api-key: api-key
+#    model: deepseek-v4-pro
+#  vision:
+#    base-url: base-url
+#    api-key: api-key
+#    model: qwen3.6-plus
+

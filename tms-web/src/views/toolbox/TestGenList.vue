@@ -67,6 +67,18 @@
       </el-table-column>
     </el-table>
 
+    <div class="pager">
+      <el-pagination
+        layout="total, sizes, prev, pager, next"
+        :total="total"
+        :page-size="query.pageSize"
+        :page-sizes="[10, 20, 50, 100]"
+        :current-page="query.pageNo"
+        @size-change="onSizeChange"
+        @current-change="onPageChange"
+      />
+    </div>
+
     <!-- 新建任务对话框 -->
     <el-dialog v-model="createDialogVisible" title="新建用例生成任务" width="520px" :close-on-click-modal="false" class="create-dialog">
       <el-form :model="createForm" label-width="90px" :rules="formRules" ref="formRef">
@@ -114,7 +126,7 @@
 </template>
 
 <script>
-import { ref, onMounted, onActivated } from 'vue'
+import { ref, reactive, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
@@ -129,6 +141,8 @@ export default {
     const router = useRouter()
     const userStore = useUserStore()
     const taskList = ref([])
+    const total = ref(0)
+    const query = reactive({ pageNo: 1, pageSize: 10 })
     const loading = ref(false)
     const creating = ref(false)
     const createDialogVisible = ref(false)
@@ -171,14 +185,32 @@ export default {
     const fetchList = async () => {
       loading.value = true
       try {
-        const res = await testgenApi.listTasks()
-        taskList.value = Array.isArray(res.data) ? res.data : []
+        const res = await testgenApi.listTasks(query)
+        if (res.code === 0 && res.data) {
+          taskList.value = res.data.list || []
+          total.value = res.data.total || 0
+        } else {
+          taskList.value = []
+          total.value = 0
+        }
       } catch (e) {
         console.error('获取任务列表失败', e)
         taskList.value = []
+        total.value = 0
       } finally {
         loading.value = false
       }
+    }
+
+    const onPageChange = (page) => {
+      query.pageNo = page
+      fetchList()
+    }
+
+    const onSizeChange = (size) => {
+      query.pageSize = size
+      query.pageNo = 1
+      fetchList()
     }
 
     const beforeUpload = (file) => {
@@ -300,10 +332,10 @@ export default {
     onActivated(fetchList)
 
     return {
-      taskList, loading, creating, createDialogVisible, createForm, formRef, uploadRef, uploadUrl, formRules,
+      taskList, total, query, loading, creating, createDialogVisible, createForm, formRef, uploadRef, uploadUrl, formRules,
       statusTextMap, statusTypeMap, prdTypeMap,
       formatDateTime, createTimeFormatter,
-      fetchList, beforeUpload, onUploadSuccess, onUploadError, onUploadRemove,
+      fetchList, onPageChange, onSizeChange, beforeUpload, onUploadSuccess, onUploadError, onUploadRemove,
       openCreateDialog, handleCreate, continueGen, regenerate, downloadXmind, deleteTask
     }
   }
@@ -313,6 +345,7 @@ export default {
 <style scoped>
 .test-gen-list { padding: 20px; }
 .action-bar { margin-bottom: 16px; display: flex; justify-content: flex-end; gap: 8px; }
+.pager { margin-top: 16px; display: flex; justify-content: flex-end; }
 :deep(.center-header) {
   text-align: center;
 }

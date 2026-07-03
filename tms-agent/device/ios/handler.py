@@ -69,7 +69,8 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
 
     # 投屏参数
     TARGET_FPS = 25
-    JPEG_QUALITY = 60  # JPEG 压缩质量（1-95，越低体积越小）
+    # MJPEG 重压缩质量：0/None 表示透传设备原始帧（默认，省 CPU）；设为 1-95 才重编码
+    JPEG_QUALITY = settings.get("ios", {}).get("proxy", {}).get("mjpeg_quality", 0)
 
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
         super().__init__(application, request, **kwargs)
@@ -168,6 +169,7 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
 
     async def _stream_mjpeg(self):
         """MJPEG 流式传输 - 限帧 + 压缩"""
+        disconnected = False
         try:
             mjpeg_url = f"http://localhost:{self.mjpeg_port}"
             mjpeg_reader = MjpegReader(mjpeg_url)
@@ -183,21 +185,37 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                     continue
                 last_frame_time = now
 
-                # JPEG 重压缩降低传输体积
-                try:
-                    img = Image.open(io.BytesIO(jpeg_data))
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=self.JPEG_QUALITY)
-                    jpeg_data = buf.getvalue()
-                except Exception:
-                    pass  # 压缩失败则发送原始帧
+                # 默认透传设备原始 JPEG；仅当配置了 JPEG_QUALITY 时才重编码（省 CPU）
+                if self.JPEG_QUALITY:
+                    try:
+                        img = Image.open(io.BytesIO(jpeg_data))
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=self.JPEG_QUALITY)
+                        jpeg_data = buf.getvalue()
+                    except Exception:
+                        pass  # 压缩失败则发送原始帧
 
                 await self.write_message(jpeg_data, binary=True)
 
+            # 流在仍需推送时结束（生成器耗尽），通常是设备断开/转发失效
+            if self.streaming:
+                disconnected = True
+
         except Exception as e:
+            # 读取中断多为设备被拔出、go-ios 转发失效
             logger.error(f"iOS MJPEG 流异常: {e}")
+            disconnected = True
         finally:
             self.streaming = False
+
+        # 设备断开：主动通知并关闭前端投屏连接，让 web 立即感知（对齐 Android）
+        if disconnected:
+            try:
+                if self.ws_connection and not self.ws_connection.is_closing():
+                    await self.write_message(json.dumps({"type": "device_disconnected", "serial": self.udid}))
+                    self.close()
+            except Exception:
+                pass
 
     async def _stop_stream(self):
         """停止投屏流"""

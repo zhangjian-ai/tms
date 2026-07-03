@@ -85,7 +85,7 @@
           <el-button link type="primary" @click="loadHistory">刷新</el-button>
         </div>
       </template>
-      <el-table :data="history" size="small" @row-click="viewHistory" class="history-table">
+      <el-table :data="history" size="small" :max-height="400" @row-click="viewHistory" class="history-table">
         <el-table-column prop="createTime" label="时间" width="160" />
         <el-table-column prop="refA" label="基准侧 A" show-overflow-tooltip />
         <el-table-column prop="refB" label="目标侧 B" show-overflow-tooltip />

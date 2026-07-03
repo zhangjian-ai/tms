@@ -1,6 +1,8 @@
 import struct
+import random
 import zipfile
 import asyncio
+import json
 import adbutils
 import subprocess
 
@@ -13,9 +15,14 @@ from h26x_extractor.nalutypes import SPS
 from tornado.websocket import WebSocketHandler
 
 from device.android.scrcpy.adb import AdbClient
-from device.android.tools.adb import get_adb_config
+from device.android.tools.adb import get_adb_config, adb_cmd
+from device.android.tools.install import AndroidToolDownloader, DOWNLOAD_DIR
 
-STATIC_DIR = Path(__file__).parent.parent / "static"
+# 与 install.py 共用同一目录（device/android/tools/static），scrcpy-server 缺失时可自愈下载
+STATIC_DIR = DOWNLOAD_DIR
+
+# scrcpy-server 版本（2.x 协议：scid 命名 socket、12 字节视频头、video_bit_rate 等新参数）
+SCRCPY_VERSION = "2.7"
 
 
 class ScrcpyDevice:
@@ -36,6 +43,7 @@ class ScrcpyDevice:
 
         self.name = None
         self.resolution = None
+        self.scid = None  # scrcpy 2.x 的会话 id，决定 localabstract socket 名 scrcpy_<scid>
 
         self.async_lock = asyncio.Lock()
 
@@ -48,17 +56,13 @@ class ScrcpyDevice:
             task.cancel()
             await task
         except asyncio.CancelledError:
-            logger.debug("任务已取消")
+            pass
         except Exception as e:
             logger.debug(f"任务异常: {e}")
 
     async def cleanup_existing_scrcpy_processes(self):
         """清理设备上已存在的scrcpy进程"""
         try:
-            cfg = get_adb_config()
-            adb_host = cfg["host"]
-            adb_port = cfg["port"]
-
             cleanup_commands = [
                 "pkill -f 'app_process.*scrcpy'",
                 "pkill -f 'scrcpy-server'",
@@ -69,11 +73,10 @@ class ScrcpyDevice:
 
             for cmd in cleanup_commands:
                 try:
-                    kill_cmd = [
-                        "adb", "-H", adb_host, "-P", str(adb_port),
-                        "-s", self.serial, "shell", cmd
-                    ]
-                    result = subprocess.run(kill_cmd, capture_output=True, text=True, timeout=10)
+                    result = subprocess.run(
+                        adb_cmd("shell", cmd, serial=self.serial),
+                        capture_output=True, text=True, timeout=10
+                    )
                     if result.returncode == 0 and result.stdout.strip():
                         logger.info(f"[{self.serial}] 清理scrcpy进程: {cmd}")
                 except Exception as e:
@@ -90,11 +93,14 @@ class ScrcpyDevice:
             await self.cleanup_existing_scrcpy_processes()
 
             cfg = get_adb_config()
-            adb_host = cfg["host"]
+            # adbutils 客户端连接目标用本机地址（server 监听 0.0.0.0 由 -a 控制）
+            adb_host = cfg["host"] if cfg["host"] != "0.0.0.0" else "127.0.0.1"
             adb_port = cfg["port"]
 
             adb_client = adbutils.AdbClient(host=adb_host, port=adb_port)
             device = adb_client.device(self.serial)
+
+            server_zip = f"scrcpy-server-{SCRCPY_VERSION}.zip"
 
             try:
                 result = device.shell("ls /data/local/tmp/scrcpy-server")
@@ -102,54 +108,62 @@ class ScrcpyDevice:
                     raise FileNotFoundError("scrcpy-server不存在")
             except Exception:
                 scrcpy_server_path = STATIC_DIR / "scrcpy-server"
-                scrcpy_zip_path = STATIC_DIR / "scrcpy-server-1.24.zip"
+                scrcpy_zip_path = STATIC_DIR / server_zip
 
-                if not scrcpy_server_path.exists() and scrcpy_zip_path.exists():
-                    logger.info(f"[{self.serial}] 解压scrcpy-server-1.24.zip...")
-                    with zipfile.ZipFile(scrcpy_zip_path, 'r') as zip_ref:
-                        for file_info in zip_ref.filelist:
-                            if file_info.filename.endswith('scrcpy-server') or file_info.filename == 'scrcpy-server':
-                                with zip_ref.open(file_info) as source, open(scrcpy_server_path, 'wb') as target:
-                                    target.write(source.read())
-                                break
+                # 设备端 server 会被 scrcpy cleanup 删除，需按需重推；本地缺 zip 时自愈下载
+                if not scrcpy_server_path.exists():
+                    if not scrcpy_zip_path.exists():
+                        logger.info(f"[{self.serial}] 本地缺少 {server_zip}，尝试下载...")
+                        AndroidToolDownloader().download_scrcpy_server()
 
-                    if scrcpy_server_path.exists():
-                        logger.info(f"[{self.serial}] scrcpy-server解压成功")
-                    else:
-                        raise ConnectionError("zip文件中未找到scrcpy-server")
+                    if scrcpy_zip_path.exists():
+                        logger.info(f"[{self.serial}] 解压{server_zip}...")
+                        with zipfile.ZipFile(scrcpy_zip_path, 'r') as zip_ref:
+                            for file_info in zip_ref.filelist:
+                                if file_info.filename.endswith('scrcpy-server') or file_info.filename == 'scrcpy-server':
+                                    with zip_ref.open(file_info) as source, open(scrcpy_server_path, 'wb') as target:
+                                        target.write(source.read())
+                                    break
+
+                        if scrcpy_server_path.exists():
+                            logger.info(f"[{self.serial}] scrcpy-server解压成功")
+                        else:
+                            raise ConnectionError("zip文件中未找到scrcpy-server")
 
                 if scrcpy_server_path.exists():
                     logger.info(f"[{self.serial}] 推送scrcpy-server...")
-                    push_cmd = [
-                        "adb", "-H", adb_host, "-P", str(adb_port),
-                        "-s", self.serial, "push",
-                        str(scrcpy_server_path), "/data/local/tmp/scrcpy-server"
-                    ]
-                    push_result = subprocess.run(push_cmd, capture_output=True, text=True, timeout=30)
+                    push_result = subprocess.run(
+                        adb_cmd("push", str(scrcpy_server_path), "/data/local/tmp/scrcpy-server", serial=self.serial),
+                        capture_output=True, text=True, timeout=30
+                    )
 
                     if push_result.returncode == 0:
-                        chmod_cmd = [
-                            "adb", "-H", adb_host, "-P", str(adb_port),
-                            "-s", self.serial, "shell", "chmod 755 /data/local/tmp/scrcpy-server"
-                        ]
-                        subprocess.run(chmod_cmd, capture_output=True, text=True, timeout=10)
+                        subprocess.run(
+                            adb_cmd("shell", "chmod 755 /data/local/tmp/scrcpy-server", serial=self.serial),
+                            capture_output=True, text=True, timeout=10
+                        )
                         logger.info(f"[{self.serial}] scrcpy-server推送成功")
                     else:
                         raise ConnectionError(f"推送scrcpy-server失败: {push_result.stderr}")
                 else:
                     raise ConnectionError("本地scrcpy-server文件不存在")
 
+            # scrcpy 2.x 参数（全部 key=value）：禁用音频保持单视频流，强制 h264 供前端解码
+            self.scid = f"{random.getrandbits(31):08x}"
             scrcpy_cmd = [
                 "CLASSPATH=/data/local/tmp/scrcpy-server",
                 "app_process",
                 "/",
                 "com.genymobile.scrcpy.Server",
-                "1.24",
+                SCRCPY_VERSION,
+                f"scid={self.scid}",
                 "log_level=info",
+                "video=true",
+                "audio=false",
                 f"max_size={self.max_size}",
-                f"bit_rate={self.bit_rate}",
+                f"video_bit_rate={self.bit_rate}",
                 f"max_fps={self.max_fps}",
-                "lock_video_orientation=-1",
+                "video_codec=h264",
                 "tunnel_forward=true",
                 "control=true",
                 "display_id=0",
@@ -158,18 +172,16 @@ class ScrcpyDevice:
                 "power_off_on_close=false",
                 "clipboard_autosync=false",
                 "downsize_on_error=true",
-                "cleanup=true",
+                "cleanup=false",  # 断开投屏后不清理设备上的scrcpy文件
                 "power_on=false",
                 "send_device_meta=true",
+                "send_codec_meta=true",
                 "send_frame_meta=false",
                 "send_dummy_byte=true",
-                "raw_video_stream=false",
+                "raw_stream=false",
             ]
 
-            commands = [
-                "adb", "-H", adb_host, "-P", str(adb_port),
-                "-s", self.serial, "shell", " ".join(scrcpy_cmd)
-            ]
+            commands = adb_cmd("shell", " ".join(scrcpy_cmd), serial=self.serial)
 
             self.shell_socket = subprocess.Popen(
                 commands,
@@ -211,8 +223,10 @@ class ScrcpyDevice:
             if not len(self.name):
                 raise ConnectionError("未收到设备名称")
 
-            resolution_bytes = await self.video_socket.read_bytes(4)
-            self.resolution = struct.unpack(">HH", resolution_bytes)
+            # scrcpy 2.x 视频头：codec_id(u32) + width(u32) + height(u32)，共 12 字节
+            header = await self.video_socket.read_bytes(12)
+            _codec_id, width, height = struct.unpack(">III", header)
+            self.resolution = (width, height)
 
         except Exception as e:
             logger.error(f"[{self.serial}] socket准备失败: {e}")
@@ -221,14 +235,16 @@ class ScrcpyDevice:
     async def _connect_scrcpy_socket(self, timeout: int = 10) -> AdbClient:
         """连接 scrcpy 的 localabstract socket，带重试"""
         cfg = get_adb_config()
+        adb_host = cfg["host"] if cfg["host"] != "0.0.0.0" else "127.0.0.1"
         last_error = None
 
         for i in range(timeout * 100):
             socket = None
             try:
-                socket = await AdbClient.connect(host=cfg["host"], port=cfg["port"])
+                socket = await AdbClient.connect(host=adb_host, port=cfg["port"])
                 await socket.write_and_check(f'host:transport:{self.serial}')
-                await socket.write_and_check('localabstract:scrcpy')
+                # scrcpy 2.x 的 localabstract socket 名带 scid
+                await socket.write_and_check(f'localabstract:scrcpy_{self.scid}')
                 return socket
             except Exception as e:
                 last_error = e
@@ -269,6 +285,20 @@ class ScrcpyDevice:
                 logger.info(f"[{self.serial}] scrcpy连接异常: {str(e)}")
                 break
 
+        # 流异常结束（通常是设备断开）主动通知并关闭前端投屏连接，让 web 立即感知
+        # 注：用户主动停止/清理会 cancel 本任务（CancelledError），不会走到这里
+        self._notify_stream_disconnected()
+
+    def _notify_stream_disconnected(self):
+        """告知并关闭所有前端投屏 WS，使 web 端 onclose 立即触发"""
+        for ws_client in list(self.ws_client_list):
+            try:
+                if ws_client.ws_connection and not ws_client.ws_connection.is_closing():
+                    ws_client.write_message(json.dumps({"type": "device_disconnected", "serial": self.serial}))
+                    ws_client.close()
+            except Exception:
+                pass
+
     def update_resolution(self, current_nal_data: bytes):
         """根据SPS帧更新分辨率"""
         if current_nal_data.startswith(b'\x00\x00\x00\x01g'):
@@ -296,6 +326,11 @@ class ScrcpyDevice:
         if self.video_data_transfer:
             await self.cancel_task(self.video_data_transfer)
             self.video_data_transfer = None
+
+        # 设备离线路径（skip_device_cleanup=True）：cancel 会跳过 _video_task 的自我通知，
+        # 这里补一刀，确保前端投屏连接被关闭、web 立即感知
+        if skip_device_cleanup:
+            self._notify_stream_disconnected()
 
         if self.control_socket:
             self.control_socket.disconnect()

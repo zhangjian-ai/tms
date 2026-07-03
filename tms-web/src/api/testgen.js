@@ -4,8 +4,8 @@ export const testgenApi = {
   createTask(data) {
     return api.post('/testgen/task/create', data)
   },
-  listTasks() {
-    return api.get('/testgen/task/list')
+  listTasks(params) {
+    return api.get('/testgen/task/list', { params })
   },
   getTask(taskId) {
     return api.get(`/testgen/task/${taskId}`)

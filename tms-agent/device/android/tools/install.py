@@ -82,8 +82,8 @@ class AndroidToolDownloader:
         """下载scrcpy-server"""
         logger.info("下载scrcpy-server...")
 
-        # scrcpy-server版本
-        version = "1.24"
+        # scrcpy-server版本（与 scrcpy/device.py 的 SCRCPY_VERSION 保持一致）
+        version = "2.7"
         server_file = f"scrcpy-server-v{version}"
         zip_file = f"scrcpy-server-{version}.zip"
 
@@ -130,9 +130,7 @@ class AndroidDeviceInstaller:
 
     def install_scrcpy_server(self, device: u2.Device) -> bool:
         """安装scrcpy-server到设备"""
-        logger.info(f"开始安装scrcpy-server到设备: {device.serial}")
-
-        server_zip = "scrcpy-server-1.24.zip"
+        server_zip = "scrcpy-server-2.7.zip"
         zip_path = self.download_dir / server_zip
 
         # 检查zip文件是否已下载
@@ -148,7 +146,6 @@ class AndroidDeviceInstaller:
         try:
             result = device.shell(f"ls -l {device_path}")
             if "No such file" not in result.output:
-                logger.info("scrcpy-server已存在于设备")
                 return True
         except:
             pass  # 文件不存在，继续安装
@@ -200,7 +197,6 @@ class AndroidDeviceInstaller:
         try:
             device = u2.connect(device_serial)
             device.window_size()  # 触发atx-agent检查安装
-            logger.info(f"为设备安装接入工具: {device_serial}")
 
             # 安装scrcpy-server
             self.install_scrcpy_server(device)

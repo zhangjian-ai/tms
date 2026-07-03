@@ -6,9 +6,7 @@ from logzero import logger
 from tornado import httpclient
 
 """
-注意tidevice中WDAService类的_is_alive存在问题，可手动将其返回值改为True，使用我们的健康检查即可。
-
-控制链路：Web → Agent(WebSocket) → AsyncHTTPClient(单例连接池) localhost:port(wdaproxy 转发) → 设备 WDA。
+控制链路：Web → Agent(WebSocket) → AsyncHTTPClient(单例连接池) → localhost:port(端口转发) → 设备 WDA。
 """
 
 
@@ -28,6 +26,9 @@ class WDAClient:
 
     async def _request(self, method: str, path: str, body=None, headers=None, timeout=30.0):
         """统一的 HTTP 请求方法"""
+        # tornado 要求 POST/PUT/PATCH 必须带 body，无参命令(如 unlock)补一个空 JSON
+        if body is None and method in ("POST", "PUT", "PATCH"):
+            body = b"{}"
         request = httpclient.HTTPRequest(
             url=f"{self.base_url}{path}",
             method=method,
@@ -67,7 +68,6 @@ class WDAClient:
             response = await self._request("GET", "/status", timeout=3.0)
             return response.code == 200
         except Exception:
-            return False
             return False
 
     async def create_session(self) -> bool:
@@ -139,10 +139,10 @@ class WDAClient:
         return resp is not None and resp.code == 200
 
     async def unlock(self) -> bool:
-        resp = await self._control_request(
-            "POST", f"/session/{self.session_id}/wda/pressButton",
-            body=json.dumps({"name": "home"})
-        )
+        """点亮并解锁屏幕：WDA /session/{id}/wda/unlock（session 级，兼容新旧 WDA）"""
+        if not self.session_id:
+            return False
+        resp = await self._control_request("POST", f"/session/{self.session_id}/wda/unlock")
         return resp is not None and resp.code == 200
 
     async def screenshot(self) -> Optional[str]:

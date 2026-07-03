@@ -4,7 +4,8 @@ import cn.hutool.core.bean.BeanUtil;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.OrderItem;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.seeker.tms.biz.testgen.config.LlmProperties;
 import com.seeker.tms.biz.testgen.entities.*;
@@ -15,6 +16,7 @@ import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.service.TestGenService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
 import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
+import com.seeker.tms.common.entities.PageResult;
 import com.seeker.tms.common.utils.MinioUtil;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
@@ -96,9 +98,21 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     }
 
     @Override
-    public List<TestGenTaskPO> listTasks() {
-        return taskMapper.selectList(
-                new LambdaQueryWrapper<TestGenTaskPO>().orderByDesc(TestGenTaskPO::getCreateTime));
+    public PageResult<TestGenTaskPO> pageTasks(TaskQueryDTO query) {
+        Page<TestGenTaskPO> page = Page.of(query.getPageNo(), query.getPageSize());
+        // 默认按创建时间倒序；前端传 sortBy 时以其为准（sortBy 为数据库列名）
+        String sortBy = (query.getSortBy() != null && !query.getSortBy().isBlank())
+                ? query.getSortBy() : "create_time";
+        page.addOrder(new OrderItem(sortBy, query.isAsc()));
+
+        this.lambdaQuery().page(page);
+
+        PageResult<TestGenTaskPO> result = new PageResult<>();
+        result.setTotal((int) page.getTotal());
+        result.setPageNo((int) page.getCurrent());
+        result.setPageCount((int) page.getPages());
+        result.setList(page.getRecords());
+        return result;
     }
 
     @Override

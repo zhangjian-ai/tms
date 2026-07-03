@@ -1,7 +1,6 @@
 import os
 import asyncio
 import adbutils
-from adbutils.errors import AdbConnectionError
 
 from typing import Dict
 from logzero import logger
@@ -33,109 +32,121 @@ class AndroidDeviceManager:
 
     def __init__(self):
         self.config = settings["android"]
-        self.host = self.config["adb"].get("host", "0.0.0.0")
+        # 配置里的 host 用于上报（0.0.0.0 时替换为 LAN IP）；客户端连接一律用 127.0.0.1
+        self.report_host = self.config["adb"].get("host", "0.0.0.0")
         self.port = self.config["adb"].get("port", 5538)
+        self.host = "127.0.0.1"
 
-        os.environ.setdefault("ANDROID_ADB_SERVER_HOST", "0.0.0.0")
-        os.environ.setdefault("ANDROID_ADB_SERVER_PORT", "5538")
+        # 统一 adb 客户端目标地址与版本变量，避免多版本客户端触发 server 重启
+        os.environ["ANDROID_ADB_SERVER_HOST"] = self.host
+        os.environ["ANDROID_ADB_SERVER_PORT"] = str(self.port)
+        os.environ["ADB_SERVER_HOST"] = self.host
+        os.environ["ADB_SERVER_PORT"] = str(self.port)
 
         self.adb = adbutils.AdbClient(host=self.host, port=self.port)
         adbutils.adb = self.adb
 
-        # 设备状态管理
         self.devices: Dict[str, DeviceState] = {}
-
-        # 工具实例
         self.installer = AndroidDeviceInstaller()
-
-        # 后端的ws上报信息
         self.ws: websocket.WebSocketClientConnection = ...
 
+    async def _ensure_ws(self):
+        """确保后端 WS 已连接"""
+        if not self.ws or isinstance(self.ws, Ellipsis.__class__):
+            self.ws = await ws_client.connect()
+        return self.ws
+
     async def sync(self):
-        """
-        同步设备状态到服务端
-        :return:
-        """
-
+        """同步设备状态到服务端（3秒轮询 adb 实时设备列表为权威状态，与 iOS 一致）"""
         while True:
-            # 3s同步一次状态，不能使用同步等待，同步会导致代理服务没法处理请求
             await asyncio.sleep(3)
-
-            if not self.ws or isinstance(self.ws, Ellipsis.__class__):
-                self.ws = await ws_client.connect()
-
             try:
-                # 设备监听
-                devices = self.adb.device_list()
-                device_serials = [device.serial for device in devices]
+                await self._ensure_ws()
 
-                # 更新设备状态
-                current_time = datetime.now()
-                for serial in device_serials:
+                # 以 adb 实时设备列表为准（adb 异常时不误判下线）
+                try:
+                    current = {d.serial for d in self.adb.device_list()}
+                except Exception as e:
+                    logger.warning(f"获取 adb 设备列表失败: {e}")
+                    continue
+
+                # 上线：标记在线，未完成初始化的设备执行初始化
+                for serial in current:
                     if serial not in self.devices:
-                        logger.info(f"发现新设备: {serial}")
-                        self.devices[serial] = DeviceState(
-                            serial=serial,
-                            online=True,
-                            last_seen=current_time)
+                        self.devices[serial] = DeviceState(serial=serial, online=True)
+                    self.devices[serial].online = True
+                    self.devices[serial].last_seen = datetime.now()
+                    if not self.devices[serial].init or not self.devices[serial].t2u:
+                        await self._on_online(serial)
+
+                # 标记不在实时列表中的设备为离线
+                for serial, device in list(self.devices.items()):
+                    if serial not in current:
+                        device.online = False
+
+                # 上报状态：在线发 online；离线则清理资源、发 offline、成功后移除
+                for serial, device in list(self.devices.items()):
+                    if device.online:
+                        await self.ws.write_message({"type": "status", "serial": serial, "status": "online"})
                     else:
-                        if not self.devices[serial].online:
-                            self.devices[serial].online = True
-                            self.devices[serial].last_seen = current_time
-
-                    await self.ws.write_message({"type": "status", "serial": serial, "status": "online"})
-
-                # 标记离线设备
-                for serial, device_info in self.devices.items():
-                    if serial not in device_serials:
-                        device_info.online = False
-                        device_info.init = False
-
-                # 信息同步
-                for serial, device in self.devices.items():
-                    if not device.online:
-                        await scrcpy_manager.cleanup_device(serial, device_offline=True)
-
-                        if device.t2u:
-                            await device.t2u.close()
-                            device.t2u = None
-
+                        await self._on_offline(serial)
                         await self.ws.write_message({"type": "status", "serial": serial, "status": "offline"})
-                        continue
+                        self.devices.pop(serial, None)
 
-                    # 设备初始化
-                    if not device.init:
-                        # 首次连接时，安装apk
-                        result = self.installer.install_to_device(serial)
-                        if result:
-                            device.init = True
-
-                            # 获取并同步设备基础信息
-                            device_info = self.get_device_info(self.adb.device(serial))
-
-                            # 同步到服务端
-                            await self.ws.write_message(
-                                {"type": "device_info", "serial": serial, "device_info": device_info})
-
-                    if not device.t2u:
-                        # 启动设备connect代理
-                        t2u = Tcp2Usb(serial, self.host, self.port)
-                        t2u.start()
-                        device.t2u = t2u
-
-                        connection_info = self.get_connection_info(device)
-
-                        # 同步到服务端
-                        await self.ws.write_message(
-                            {"type": "connection_info", "serial": serial, "connection_info": connection_info})
-
-            except AdbConnectionError:
-                logger.warning("ADB服务连接失败，等待恢复...")
             except Exception as e:
-                logger.error(f"设备同步失败: {e.__class__}")
+                logger.error(f"Android 设备同步失败: {e}")
                 if "websocket" in str(e).lower():
-                    logger.warning("检测到WebSocket连接问题，尝试重连...")
                     self.ws = None
+
+    async def _on_online(self, serial: str):
+        """设备上线：安装接入工具、启动 Tcp2Usb 代理并上报"""
+        try:
+            if serial not in self.devices:
+                logger.info(f"发现新设备: {serial}")
+                self.devices[serial] = DeviceState(serial=serial, online=True)
+            device = self.devices[serial]
+            device.online = True
+            device.last_seen = datetime.now()
+
+            await self._ensure_ws()
+            await self.ws.write_message({"type": "status", "serial": serial, "status": "online"})
+
+            # 安装 apk + 取设备信息为阻塞调用，放线程池避免卡住事件循环/事件流
+            if not device.init:
+                if await asyncio.to_thread(self.installer.install_to_device, serial):
+                    device.init = True
+                    info = await asyncio.to_thread(self.get_device_info, self.adb.device(serial))
+                    if info:
+                        await self.ws.write_message({"type": "device_info", "serial": serial, "device_info": info})
+
+            if not device.t2u:
+                t2u = Tcp2Usb(serial, self.host, self.port)
+                t2u.start()
+                device.t2u = t2u
+                await self.ws.write_message({
+                    "type": "connection_info", "serial": serial,
+                    "connection_info": self.get_connection_info(device)
+                })
+        except Exception as e:
+            logger.error(f"设备上线处理失败 {serial}: {e}")
+
+    async def _on_offline(self, serial: str):
+        """设备下线：标记离线并清理 scrcpy / Tcp2Usb 资源。
+
+        offline 上报与从字典移除交由心跳循环完成，保证上报成功后才移除，避免漏报。
+        """
+        device = self.devices.get(serial)
+        if not device:
+            return
+        device.online = False
+        device.init = False
+        try:
+            await scrcpy_manager.cleanup_device(serial, device_offline=True)
+            if device.t2u:
+                device.t2u.stop()  # 线程安全停止（在其自身事件循环里关闭 server）
+                device.t2u = None
+        except Exception as e:
+            logger.error(f"设备下线清理失败 {serial}: {e}")
 
     @staticmethod
     def get_device_info(adb_device: adbutils.AdbDevice) -> Dict:
@@ -179,14 +190,13 @@ class AndroidDeviceManager:
         从ADB设备获取基础信息
         """
         try:
-            adb_host = self.config["adb"]["host"]
-
+            adb_host = self.report_host
             if adb_host == "0.0.0.0":
                 adb_host = Host.get()
 
             info = {
                 "adb_host": adb_host,
-                "adb_port": self.config["adb"]["port"],
+                "adb_port": self.port,
                 "proxy_host": Host.get(),
                 "proxy_port": self.config["proxy"]["port"],
                 "connection": f"{Host.get()}:{device.t2u.proxy_port}"

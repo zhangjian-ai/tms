@@ -68,6 +68,7 @@ venv/
 
 ### Agent local config ###
 tms-agent/settings.yml
+selfIdentity.plist
 
 ### Binary / third-party tools ###
 tms-agent/device/android/tools/static/scrcpy-server

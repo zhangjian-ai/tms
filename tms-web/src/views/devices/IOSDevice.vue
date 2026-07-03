@@ -585,6 +585,14 @@ const handleScreenMessage = (data) => {
     case 'stream_stopped':
       console.log('投屏已停止')
       break
+    case 'device_disconnected':
+      // 设备被拔出/断开：立即反映到页面并清理连接
+      ElMessage.warning('设备已断开连接')
+      isConnected.value = false
+      if (controlWs) controlWs.close()
+      if (screenWs) screenWs.close()
+      if (inspectorWs) inspectorWs.close()
+      break
   }
 }
 

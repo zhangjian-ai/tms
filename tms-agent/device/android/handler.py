@@ -18,6 +18,7 @@ import uiautomator2 as u2
 import xml.etree.ElementTree as ET
 
 from device.android.scrcpy import scrcpy_manager
+from device.android.tools.adb import get_adb_bin
 from utils.variables import settings
 
 
@@ -46,8 +47,21 @@ def get_device_hierarchy_xml(device, compress=True):
         }
 
 
+def _device_online(device_manager, serial) -> bool:
+    """校验设备是否在线（拒绝已拔出/离线设备的连接）。
+
+    只看 online：设备是否物理在线才是能否连接的判据；init 只是工具就绪标记，
+    且 scrcpy 会在 prepare_server 自行推送 server，不依赖 init。
+    """
+    if not device_manager or serial not in device_manager.devices:
+        return False
+    return device_manager.devices[serial].online
+
+
 class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
     """Scrcpy专用WebSocket - 专门负责投屏功能"""
+
+    device_manager = None  # 由 AndroidProxyServer 注入
 
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
         super().__init__(application, request, **kwargs)
@@ -62,6 +76,16 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
         """WebSocket连接建立"""
         self.serial = serial
         self.streaming = False
+
+        # 设备在线校验：不在线/未就绪直接拒绝，避免对已拔设备误报连接成功
+        if not _device_online(self.device_manager, serial):
+            if self.ws_connection and not self.ws_connection.is_closing():
+                self.write_message(json.dumps({
+                    "type": "error",
+                    "message": f"设备不在线或未就绪: {serial}"
+                }))
+            self.close()
+            return
 
         # 发送连接确认
         if self.ws_connection and not self.ws_connection.is_closing():
@@ -199,6 +223,8 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
 class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
     """设备控制WebSocket"""
 
+    device_manager = None  # 由 AndroidProxyServer 注入
+
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
         super().__init__(application, request, **kwargs)
         self.serial = None
@@ -212,6 +238,16 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
     def open(self, serial):
         """WebSocket连接建立"""
         self.serial = serial
+
+        # 设备在线校验（对齐 iOS）
+        if not _device_online(self.device_manager, serial):
+            if self.ws_connection and not self.ws_connection.is_closing():
+                self.write_message(json.dumps({
+                    "type": "error",
+                    "message": f"设备不在线或未就绪: {serial}"
+                }))
+            self.close()
+            return
 
         try:
             # 通过ADB客户端获取设备
@@ -588,6 +624,8 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
 class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
     """元素检查器WebSocket - 专门负责UI元素查找和操作"""
 
+    device_manager = None  # 由 AndroidProxyServer 注入
+
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
         super().__init__(application, request, **kwargs)
         self.serial = None
@@ -601,6 +639,16 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
     def open(self, serial):
         """WebSocket连接建立"""
         self.serial = serial
+
+        # 设备在线校验（对齐 iOS）
+        if not _device_online(self.device_manager, serial):
+            if self.ws_connection and not self.ws_connection.is_closing():
+                self.write_message(json.dumps({
+                    "type": "error",
+                    "message": f"设备不在线或未就绪: {serial}"
+                }))
+            self.close()
+            return
 
         try:
             # 通过ADB客户端获取设备
@@ -941,40 +989,38 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
 class AndroidProxyServer:
     """Android代理服务器"""
 
-    def __init__(self):
+    def __init__(self, device_manager=None):
         self.config = settings["android"]
+        self.device_manager = device_manager
         # 初始化本地环境
         self.init_env()
         # 启动代理服务
         self.app = self.make_app()
 
     @staticmethod
-    def _exec(command, host="", port=""):
-        cmd = "adb"
-        if host and host != "127.0.0.1":
-            cmd += f" -H {host}"
-        if port and port != "5037":
-            cmd += f" -P {port}"
-        cmd += f" {command}"
-        logger.info(cmd)
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+    def _exec(args: list):
+        """执行一条 adb 命令（统一二进制，不用 shell）"""
+        cmd = [get_adb_bin()] + args
+        logger.info(" ".join(cmd))
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return proc.stdout.read().decode()
 
     def init_env(self):
-        # 停止本机adb-server
-        self._exec(command="kill-server")
-        self._exec(command="kill-server", port=self.config["adb"]["port"])
-        # 启动指定端口的adb-server
-        self._exec(command="-a start-server", port=self.config["adb"]["port"])
+        port = str(self.config["adb"]["port"])
+        # 停止可能残留的默认(5037)与指定端口 server
+        self._exec(["kill-server"])
+        self._exec(["-P", port, "kill-server"])
+        # -a 让 server 监听所有网卡（远程主机据此直连设备），统一 adb 二进制避免版本不匹配触发重启
+        self._exec(["-a", "-P", port, "start-server"])
 
     def make_app(self):
         """创建Tornado应用 - 三个WebSocket接口"""
+        # 将设备管理器注入各 WebSocket handler，供设备在线校验
+        if self.device_manager:
+            ScrcpyWebSocket.device_manager = self.device_manager
+            DeviceControlWebSocket.device_manager = self.device_manager
+            ElementInspectorWebSocket.device_manager = self.device_manager
+
         return tornado.web.Application([
             (r"/devices/([^/]+)/scrcpy", ScrcpyWebSocket),  # scrcpy投屏WebSocket
             (r"/devices/([^/]+)/control", DeviceControlWebSocket),  # 设备控制WebSocket
