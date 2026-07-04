@@ -26,12 +26,16 @@ class IOSDeviceState:
     mjpeg_port: int = 0
     wda_client: WDAClient = None
     health_fail: int = 0  # WDA 连续健康检查失败次数（容忍瞬时繁忙，避免误杀投屏）
+    miss_count: int = 0  # 设备连续未出现在 go-ios list 的次数（容忍瞬时查询失败，避免误判离线）
     last_seen: datetime = field(default_factory=datetime.now)
     error: str = ""
 
 
 class IOSDeviceManager:
     """iOS 设备管理器（go-ios，支持 iOS 17+）"""
+
+    # 连续多少次未在 go-ios list 中出现才判定离线（3s/次，约 9s 容忍瞬时查询失败）
+    OFFLINE_MISS_THRESHOLD = 3
 
     def __init__(self):
         self.config = settings["ios"]
@@ -79,7 +83,8 @@ class IOSDeviceManager:
         device.wda_runner = None
         device.wda_forward = None
 
-        if not self.idb.get_wda_status(udid):
+        # 状态未知或确未安装都不继续恢复（未知则下轮重试）
+        if self.idb.get_wda_status(udid) is not True:
             return False
 
         bundle = self.config.get("wda_bundle_id", "com.facebook.WebDriverAgentRunner.xctrunner")
@@ -121,16 +126,22 @@ class IOSDeviceManager:
                     if udid not in self.devices:
                         logger.info(f"发现新 iOS 设备: {udid}")
                         self.devices[udid] = IOSDeviceState(udid=udid, online=True, last_seen=current_time)
-                    elif not self.devices[udid].online:
-                        self.devices[udid].online = True
+                    else:
+                        # 本轮出现即重置缺失计数（容忍瞬时 list 失败）
+                        self.devices[udid].miss_count = 0
                         self.devices[udid].last_seen = current_time
+                        if not self.devices[udid].online:
+                            self.devices[udid].online = True
 
                     await self.ws.write_message({"type": "status", "serial": udid, "status": "online"})
 
-                # 3. 标记离线设备
+                # 3. 标记离线设备（带容忍：go-ios list 在设备繁忙/投屏时可能瞬时查不到，
+                #    单次缺失不立即判离线，避免误清理正在使用的设备并被重新识别）
                 for udid, device_info in self.devices.items():
                     if udid not in device_udids:
-                        device_info.online = False
+                        device_info.miss_count += 1
+                        if device_info.miss_count >= self.OFFLINE_MISS_THRESHOLD:
+                            device_info.online = False
 
                 # 4. 处理设备状态（离线设备清理后从字典移除，避免长跑泄漏）
                 offline_udids = []
@@ -195,7 +206,12 @@ class IOSDeviceManager:
     async def _init_device(self, udid: str, device: IOSDeviceState) -> bool:
         """初始化单台设备：启动 WDA、转发端口、建会话并上报。成功返回 True。"""
         # 检查 WDA 是否已安装（需提前由 Xcode 安装到设备）
-        if not self.idb.get_wda_status(udid):
+        wda_status = self.idb.get_wda_status(udid)
+        if wda_status is None:
+            # 状态未知（命令失败/设备繁忙），本轮不判定，稍后重试，避免误报"未安装"
+            logger.debug(f"设备 {udid} WDA 安装状态暂不可判定，稍后重试")
+            return False
+        if wda_status is False:
             logger.warning(f"设备 {udid} 未安装 WDA，跳过初始化")
             device.error = "WDA not installed"
             return False

@@ -155,6 +155,15 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
                     }))
                 return
 
+            # 同一设备只允许一个投屏：已被其他页面占用投屏时直接拒绝
+            if scrcpy_manager.has_active_client(self.serial, exclude=self):
+                if self.ws_connection and not self.ws_connection.is_closing():
+                    await self.write_message(json.dumps({
+                        "type": "error",
+                        "message": "设备已在其他页面投屏"
+                    }))
+                return
+
             # 使用scrcpy管理器启动流
             success = await scrcpy_manager.prepare_device_stream(self.serial, self)
 
@@ -213,10 +222,12 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
 
         if self.streaming and self.serial:
             self.streaming = False
+            # 使用引用计数式停流：仅当本设备再无投屏客户端时才真正停止，
+            # 避免某个页面关闭时销毁共享实例、误伤其它页面的投屏
             tornado.ioloop.IOLoop.current().add_callback(
-                scrcpy_manager.cleanup_device,
+                scrcpy_manager.stop_device_stream,
                 self.serial,
-                True
+                self
             )
 
 

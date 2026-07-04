@@ -18,11 +18,36 @@ class ScrcpyManager:
             self.scrcpy_devices[serial] = ScrcpyDevice(serial)
         return self.scrcpy_devices[serial]
 
+    def has_active_client(self, serial: str, exclude: WebSocketHandler = None) -> bool:
+        """该设备是否已有存活的投屏客户端（用于判断是否已在其他页面投屏）"""
+        device = self.scrcpy_devices.get(serial)
+        if not device:
+            return False
+        return any(
+            getattr(c, "ws_connection", None) is not None and c is not exclude
+            for c in device.ws_client_list
+        )
+
     async def prepare_device_stream(self, serial: str, ws_client: WebSocketHandler) -> bool:
-        """启动设备投屏"""
+        """启动设备投屏。
+
+        同一设备同一时刻只允许一个投屏：若已存在存活的投屏客户端，则拒绝新的请求，
+        由调用方向前端回传错误提示（不再清空并劫持已有投屏）。
+        """
         try:
             scrcpy_device = await self.get_device_client(serial)
-            scrcpy_device.ws_client_list.clear()
+
+            # 剔除已断开的客户端与自身，避免残留连接造成误判
+            scrcpy_device.ws_client_list = [
+                c for c in scrcpy_device.ws_client_list
+                if getattr(c, "ws_connection", None) is not None and c is not ws_client
+            ]
+
+            # 已有其他存活客户端在投屏 -> 拒绝
+            if scrcpy_device.ws_client_list:
+                logger.warning(f"设备 {serial} 已在其他页面投屏，拒绝新的投屏请求")
+                return False
+
             scrcpy_device.ws_client_list.append(ws_client)
 
             async with scrcpy_device.async_lock:

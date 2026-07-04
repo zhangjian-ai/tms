@@ -134,11 +134,21 @@
 </template>
 
 <script>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { deviceApi } from '@/api/device.js'
+import { useUserStore } from '@/stores/user.js'
+import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import DefaultPagination from '@/components/Pagination.vue'
+
+// 生成会话令牌（内存态，绝不放进 URL）
+const genSessionId = () => {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID()
+  }
+  return 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+}
 
 export default {
   name: 'DeviceList',
@@ -147,10 +157,13 @@ export default {
   },
   setup() {
     const router = useRouter()
-    
+    const userStore = useUserStore()
+    const deviceSessionStore = useDeviceSessionStore()
+
     // 响应式数据
     const loading = ref(false)
     const deviceList = ref([])
+    let pollTimer = null
 
     // 搜索表单
     const searchForm = reactive({
@@ -168,9 +181,9 @@ export default {
       total: 0
     })
 
-    // 获取设备列表
-    const getDeviceList = async () => {
-      loading.value = true
+    // 获取设备列表；silent=true 时用于轮询，不触发 loading 遮罩，避免闪烁
+    const getDeviceList = async (silent = false) => {
+      if (!silent) loading.value = true
       try {
         const params = {
           ...searchForm,
@@ -182,9 +195,9 @@ export default {
         pagination.total = data.total
 
       } catch (error) {
-        ElMessage.error('获取设备列表失败')
+        if (!silent) ElMessage.error('获取设备列表失败')
       } finally {
-        loading.value = false
+        if (!silent) loading.value = false
       }
     }
 
@@ -231,27 +244,47 @@ export default {
         return
       }
 
-      const res = await deviceApi.deviceHold({
-        id: row.id,
-        holder: "seeker"
-      })
-      if (res.code !== 0) {
+      // 点击时以后端原子占用作为“实时校验”，不信任列表中可能已陈旧的行状态
+      const holder = userStore.userInfo?.username || ''
+      if (!holder) {
+        ElMessage.error('未获取到登录用户信息，无法占用设备')
+        return
+      }
+      const sessionId = genSessionId()
+
+      let res
+      try {
+        res = await deviceApi.deviceHold({
+          id: row.id,
+          holder,
+          sessionId
+        })
+      } catch (e) {
         ElMessage.error('设备占用失败')
         getDeviceList()
-      } else {
-        try {
-          router.push({
-            name: routeName,
-            params: { id: row.id },
-            query: {
-              serial: row.serial,
-              name: row.name,
-              deviceSys: row.deviceSys
-            }
-          })
-        } catch (error) {
-          ElMessage.error('占用失败' + error)
-        }
+        return
+      }
+
+      if (res.code !== 0) {
+        ElMessage.error('设备已被占用或不可用')
+        getDeviceList()
+        return
+      }
+
+      // 占用成功：把 sessionId 交给详情页（同标签导航）
+      deviceSessionStore.setSession(row.id, sessionId)
+      try {
+        router.push({
+          name: routeName,
+          params: { id: row.id },
+          query: {
+            serial: row.serial,
+            name: row.name,
+            deviceSys: row.deviceSys
+          }
+        })
+      } catch (error) {
+        ElMessage.error('占用失败' + error)
       }
     }
 
@@ -285,9 +318,17 @@ export default {
       }
     }
 
-    // 组件挂载时获取数据
+    // 组件挂载时获取数据，并启动定时轮询以自动同步在线/离线/被占用状态
     onMounted(() => {
       getDeviceList()
+      pollTimer = setInterval(() => getDeviceList(true), 4000)
+    })
+
+    onUnmounted(() => {
+      if (pollTimer) {
+        clearInterval(pollTimer)
+        pollTimer = null
+      }
     })
 
     return {

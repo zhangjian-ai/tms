@@ -18,6 +18,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class DeviceSyncHandler extends TextWebSocketHandler {
@@ -57,8 +58,9 @@ public class DeviceSyncHandler extends TextWebSocketHandler {
                 String status = payload.getString("status");
                 if (status == null) break;
 
-                // 设置设备状态
-                redisTemplate.opsForValue().set(redisConfig.getStatusPrefix() + serial, status.equals("online") ? 1 : 0);
+                // 设置设备状态（带 TTL：agent 每 3s 上报一次 online，若 agent 进程异常退出，
+                // 状态键 15s 后自动过期，设备在列表中自动显示为不可用）
+                redisTemplate.opsForValue().set(redisConfig.getStatusPrefix() + serial, status.equals("online") ? 1 : 0, 15, TimeUnit.SECONDS);
 
                 // 设备下线后就删除掉设备连接信息
                 devicePo = Db.lambdaQuery(DevicePO.class).eq(DevicePO::getSerial, serial).one();

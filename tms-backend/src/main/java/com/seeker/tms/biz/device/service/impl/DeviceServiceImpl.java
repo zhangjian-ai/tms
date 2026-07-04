@@ -74,8 +74,19 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
             Object status = redisTemplate.opsForValue().get(redisConfig.getStatusPrefix() + devicePo.getSerial());
             Object holder = redisTemplate.opsForValue().get(redisConfig.getHolderPrefix() + devicePo.getSerial());
 
+            // holder 现以 JSON({username,sessionId}) 存储，展示只取 username；兼容旧的纯字符串值
+            String holderName = null;
+            if (holder != null) {
+                try {
+                    holderName = JSONObject.parseObject(holder.toString()).getString("username");
+                } catch (Exception e) {
+                    holderName = holder.toString();
+                }
+            }
+
+            // 可用 = 在线 且 未被占用（沿用原判定，holder 为原始对象）
             deviceVO.setStatus((status != null && (int)status == 1 && holder == null) ? BoolStatus.TRUE : BoolStatus.FALSE);
-            deviceVO.setHolder((String) holder);
+            deviceVO.setHolder(holderName);
             deviceVOS.add(deviceVO);
         }
 
@@ -101,12 +112,31 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
 
         if (devicePo == null) return false;
 
-        if (deviceHoldDTO.getHolder() != null){
-            // 尝试占用设备
-            return Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(redisConfig.getHolderPrefix() + devicePo.getSerial(), deviceHoldDTO.getHolder(), 10, TimeUnit.SECONDS));
+        String key = redisConfig.getHolderPrefix() + devicePo.getSerial();
+
+        if (deviceHoldDTO.getHolder() != null) {
+            // 占用：原子写入，先到先得。值携带 sessionId 以便后续按会话校验所有权
+            JSONObject value = new JSONObject();
+            value.put("username", deviceHoldDTO.getHolder());
+            value.put("sessionId", deviceHoldDTO.getSessionId());
+            return Boolean.TRUE.equals(redisTemplate.opsForValue()
+                    .setIfAbsent(key, value.toJSONString(), 10, TimeUnit.SECONDS));
         }
-        // 删除设备占用信息
-        redisTemplate.opsForValue().getAndDelete(redisConfig.getHolderPrefix() + devicePo.getSerial());
+
+        // 释放：仅当会话匹配才删除，避免其它页面（未持有本会话）误删原页面的占用
+        Object current = redisTemplate.opsForValue().get(key);
+        if (current == null) return true;
+
+        String storedSessionId = null;
+        try {
+            storedSessionId = JSONObject.parseObject(current.toString()).getString("sessionId");
+        } catch (Exception e) {
+            // 旧格式/非 JSON 值：无会话信息，按可清理处理
+        }
+
+        if (storedSessionId == null || storedSessionId.equals(deviceHoldDTO.getSessionId())) {
+            redisTemplate.delete(key);
+        }
         return true;
     }
 }

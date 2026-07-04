@@ -308,10 +308,19 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Monitor, Camera, HomeFilled, Document, Sunny, Search, InfoFilled, Delete } from '@element-plus/icons-vue'
 import { deviceApi } from '@/api/device.js'
 import { useUserStore } from '@/stores/user'
+import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import JMuxer from 'jmuxer'
 import pako from 'pako'
 import { ScrcpyController, Action } from '@/utils/device'
 import config from '@/config/index.js'
+
+// 生成会话令牌（内存态，绝不放进 URL）
+const genSessionId = () => {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID()
+  }
+  return 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+}
 
 export default {
   name: 'AndroidDevice',
@@ -329,6 +338,12 @@ export default {
     const route = useRoute()
     const router = useRouter()
     const userStore = useUserStore()
+    const deviceSessionStore = useDeviceSessionStore()
+
+    // 本页会话令牌：优先沿用列表页占用时生成的 sessionId（同标签导航）；
+    // 复制标签/直接输 URL 时 store 为空，则在 onMounted 时自行占用并生成新的令牌。
+    // sessionId 仅存于内存，绝不写入 URL。
+    let sessionId = deviceSessionStore.getSession(route.params.id)
 
     // 设备占用心跳
     let holdWs = null
@@ -437,11 +452,13 @@ export default {
       }
       const res = await deviceApi.deviceHold({
         id: connectionInfo.id,
-        holder: null
+        holder: null,
+        sessionId
       })
       if (res.code !== 0) {
         ElMessage.error('设备释放失败')
       }else {
+        deviceSessionStore.clearSession(route.params.id)
         try {
           // 1. 主动关闭所有WebSocket连接
           disconnectWebSocket()
@@ -2039,7 +2056,8 @@ export default {
       if (holdWs && holdWs.readyState === WebSocket.OPEN && connectionInfo.serial) {
         holdWs.send(JSON.stringify({
           serial: connectionInfo.serial,
-          username: userStore.userInfo?.username || ''
+          username: userStore.userInfo?.username || '',
+          sessionId
         }))
       }
     }
@@ -2059,11 +2077,60 @@ export default {
       }
     }
 
+    // 确保本页持有设备占用：继承自列表页则直接沿用；否则自行原子占用。
+    // 占用失败说明设备已被其他会话/页面占用 -> 返回 false，由 onMounted 拒绝投屏。
+    const ensureHold = async () => {
+      if (sessionId) return true // 列表页已占用并传入会话
+
+      const holder = userStore.userInfo?.username || ''
+      if (!holder) {
+        ElMessage.error('未获取到登录用户信息，无法占用设备')
+        return false
+      }
+
+      const newSession = genSessionId()
+      try {
+        const res = await deviceApi.deviceHold({ id: route.params.id, holder, sessionId: newSession })
+        if (!res || res.code !== 0) return false
+      } catch (e) {
+        return false
+      }
+
+      sessionId = newSession
+      deviceSessionStore.setSession(route.params.id, sessionId)
+      return true
+    }
+
+    // 页面关闭/刷新时以 keepalive 方式释放占用（onUnmounted 在这些场景不可靠）
+    const handlePageHide = () => {
+      if (sessionId) {
+        deviceApi.releaseHoldOnUnload({
+          id: connectionInfo.id || route.params.id,
+          holder: null,
+          sessionId
+        })
+      }
+    }
+
     // 组件挂载
     onMounted(async () => {
+      // 先确认占用再投屏：同一设备只允许一个用户占用、只能在一个页面投屏
+      const ok = await ensureHold()
+      if (!ok) {
+        wsStatus.value = 'occupied_by_other'
+        try {
+          await ElMessageBox.alert('该设备正在被占用/使用中，无法投屏', '设备使用中', {
+            confirmButtonText: '返回设备列表',
+            type: 'warning'
+          })
+        } catch (e) { /* ignore */ }
+        router.push({ name: 'Devices' })
+        return
+      }
+
       // 自动获取连接信息并连接设备
       await getConnectionInfo()
-      
+
       // 如果连接信息获取成功，自动连接设备
       if (connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
         connectDevice()
@@ -2074,41 +2141,49 @@ export default {
         startHoldHeartbeat()
       }
 
+      // 页面关闭/刷新时释放占用
+      window.addEventListener('pagehide', handlePageHide)
+
       // 监听窗口大小变化
       window.addEventListener('resize', handleWindowResize)
     })
-    
+
     onUnmounted(() => {
       disconnectWebSocket()
       stopHoldHeartbeat()
-      deviceApi.deviceHold({ id: connectionInfo.id, holder: null }).catch(() => {})
-      
+      // 仅释放本会话持有的占用（后端按 sessionId 校验），不会误删其它页面的占用
+      if (sessionId) {
+        deviceApi.deviceHold({ id: connectionInfo.id, holder: null, sessionId }).catch(() => {})
+        deviceSessionStore.clearSession(route.params.id)
+      }
+
       // 清理所有定时器
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
       }
-      
+
       if (resizeTimer) {
         clearTimeout(resizeTimer)
       }
-      
+
       // 清理hover定时器
       if (window.elementHoverTimer) {
         clearTimeout(window.elementHoverTimer)
         window.elementHoverTimer = null
       }
-      
+
       // 停止XML变化检测
       stopXmlChangeDetection()
-      
+
       if (jmu) {
         jmu.destroy()
         jmu = null
       }
-      
-      // 移除窗口大小变化监听
+
+      // 移除事件监听
+      window.removeEventListener('pagehide', handlePageHide)
       window.removeEventListener('resize', handleWindowResize)
-      
+
       // 清理状态
       selectedElement.value = null
       hoverElement.value = null

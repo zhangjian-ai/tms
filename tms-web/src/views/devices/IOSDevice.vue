@@ -253,18 +253,32 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Camera, Document, Loading, Sunny, HomeFilled, Monitor, Search, Delete, InfoFilled } from '@element-plus/icons-vue'
 import { deviceApi } from '@/api/device'
 import { useUserStore } from '@/stores/user'
+import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import config from '@/config/index.js'
 import pako from 'pako'
+
+// 生成会话令牌（内存态，绝不放进 URL）
+const genSessionId = () => {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID()
+  }
+  return 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+}
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const deviceSessionStore = useDeviceSessionStore()
 
 // 设备序列号（用于 WebSocket 路径，来自路由）
 const deviceSerial = ref(route.query.serial || '')
 
 // 设备 ID（用于接口与释放）
 const deviceId = ref(route.params.id ? Number(route.params.id) : null)
+
+// 本页会话令牌：优先沿用列表页占用时生成的 sessionId（同标签导航）；
+// 复制标签/直接输 URL 时为空，则在 onMounted 时自行占用并生成新令牌。仅存于内存，绝不写入 URL。
+let sessionId = deviceSessionStore.getSession(deviceId.value)
 
 // 连接信息（与 Android 同结构：代理用 proxy_*，iOS 下 adb_host/adb_port 表示 WDA；mjpeg_port 仅 agent 内部使用，web 不关心）
 const connectionInfo = reactive({
@@ -950,11 +964,12 @@ const releaseDevice = async () => {
       ElMessage.error('设备 ID 无效')
       return
     }
-    const res = await deviceApi.deviceHold({ id: deviceId.value, holder: null })
+    const res = await deviceApi.deviceHold({ id: deviceId.value, holder: null, sessionId })
     if (res.code !== 0) {
       ElMessage.error(res.msg || '释放失败')
       return
     }
+    deviceSessionStore.clearSession(deviceId.value)
     if (controlWs) controlWs.close()
     if (screenWs) screenWs.close()
     if (inspectorWs) inspectorWs.close()
@@ -1302,7 +1317,8 @@ const sendHoldHeartbeat = () => {
   if (holdWs && holdWs.readyState === WebSocket.OPEN && deviceSerial.value) {
     holdWs.send(JSON.stringify({
       serial: deviceSerial.value,
-      username: userStore.userInfo?.username || ''
+      username: userStore.userInfo?.username || '',
+      sessionId
     }))
   }
 }
@@ -1322,9 +1338,53 @@ const stopHoldHeartbeat = () => {
   }
 }
 
-onMounted(() => {
+// 确保本页持有设备占用：继承自列表页则沿用；否则自行原子占用，失败即拒绝投屏
+const ensureHold = async () => {
+  if (sessionId) return true
+
+  const holder = userStore.userInfo?.username || ''
+  if (!holder) {
+    ElMessage.error('未获取到登录用户信息，无法占用设备')
+    return false
+  }
+
+  const newSession = genSessionId()
+  try {
+    const res = await deviceApi.deviceHold({ id: deviceId.value, holder, sessionId: newSession })
+    if (!res || res.code !== 0) return false
+  } catch (e) {
+    return false
+  }
+
+  sessionId = newSession
+  deviceSessionStore.setSession(deviceId.value, sessionId)
+  return true
+}
+
+// 页面关闭/刷新时以 keepalive 方式释放占用（onBeforeUnmount 在这些场景不可靠）
+const handlePageHide = () => {
+  if (sessionId) {
+    deviceApi.releaseHoldOnUnload({ id: deviceId.value, holder: null, sessionId })
+  }
+}
+
+onMounted(async () => {
+  // 先确认占用再投屏：同一设备只允许一个用户占用、只能在一个页面投屏
+  const ok = await ensureHold()
+  if (!ok) {
+    try {
+      await ElMessageBox.alert('该设备正在被占用/使用中，无法投屏', '设备使用中', {
+        confirmButtonText: '返回设备列表',
+        type: 'warning'
+      })
+    } catch (e) { /* ignore */ }
+    router.push({ name: 'Devices' })
+    return
+  }
+
   connectDevice()
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('pagehide', handlePageHide)
   // 启动设备占用心跳
   if (deviceSerial.value) {
     startHoldHeartbeat()
@@ -1338,9 +1398,15 @@ onBeforeUnmount(() => {
   if (elementHoverTimer) clearTimeout(elementHoverTimer)
   stopHoldHeartbeat()
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('pagehide', handlePageHide)
   if (controlWs) controlWs.close()
   if (screenWs) screenWs.close()
   if (inspectorWs) inspectorWs.close()
+  // 仅释放本会话持有的占用（后端按 sessionId 校验），不会误删其它页面的占用
+  if (sessionId) {
+    deviceApi.deviceHold({ id: deviceId.value, holder: null, sessionId }).catch(() => {})
+    deviceSessionStore.clearSession(deviceId.value)
+  }
 })
 </script>
 

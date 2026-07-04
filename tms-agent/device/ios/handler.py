@@ -72,6 +72,9 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
     # MJPEG 重压缩质量：0/None 表示透传设备原始帧（默认，省 CPU）；设为 1-95 才重编码
     JPEG_QUALITY = settings.get("ios", {}).get("proxy", {}).get("mjpeg_quality", 0)
 
+    # 每个 udid 当前活跃的投屏客户端，保证同一设备只允许一个投屏
+    _active_stream_clients = {}
+
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
         super().__init__(application, request, **kwargs)
         self.udid = None
@@ -135,6 +138,16 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 }))
                 return
 
+            # 同一设备只允许一个投屏：已被其他存活客户端占用时直接拒绝
+            active = self._active_stream_clients.get(self.udid)
+            if active is not None and active is not self \
+                    and getattr(active, "ws_connection", None) is not None:
+                await self.write_message(json.dumps({
+                    "type": "error",
+                    "message": "设备已在其他页面投屏"
+                }))
+                return
+
             # 从设备管理器获取设备的 MJPEG 端口
             if self.device_manager and self.udid in self.device_manager.devices:
                 device = self.device_manager.devices[self.udid]
@@ -149,6 +162,8 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 logger.warning(f"无法从设备管理器获取端口，使用客户端提供的端口: {self.mjpeg_port}")
 
             self.streaming = True
+            # 登记为该设备当前投屏客户端
+            self._active_stream_clients[self.udid] = self
 
             # 发送流开始通知
             await self.write_message(json.dumps({
@@ -222,6 +237,7 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
         try:
             logger.info(f"停止 iOS 投屏: {self.udid}")
             self.streaming = False
+            self._release_active_client()
 
             await self.write_message(json.dumps({
                 "type": "stream_stopped"
@@ -230,9 +246,15 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
         except Exception as e:
             logger.error(f"停止 iOS 投屏失败: {e}")
 
+    def _release_active_client(self):
+        """释放本客户端对该设备投屏槽位的占用（仅当登记的就是自己）"""
+        if self._active_stream_clients.get(self.udid) is self:
+            self._active_stream_clients.pop(self.udid, None)
+
     def on_close(self):
         """WebSocket 连接关闭"""
         self.streaming = False
+        self._release_active_client()
 
 
 class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):

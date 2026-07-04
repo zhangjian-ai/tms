@@ -42,8 +42,29 @@ public class DeviceHoldHandler extends TextWebSocketHandler {
         // 根据消息类型处理
         String serial = payload.getString("serial");
         String username = payload.getString("username");
+        String sessionId = payload.getString("sessionId");
 
-        // 设置设备持有者
-        redisTemplate.opsForValue().setIfPresent(redisConfig.getHolderPrefix() + serial, username, 10, TimeUnit.SECONDS);
+        String key = redisConfig.getHolderPrefix() + serial;
+
+        // 按会话续约：仅当占用键存在且其 sessionId 与本心跳一致时才刷新，
+        // 防止第二个会话的心跳误续或覆盖当前持有者
+        String current = redisTemplate.opsForValue().get(key);
+        if (current == null) {
+            return;
+        }
+
+        String storedSessionId;
+        try {
+            storedSessionId = JSON.parseObject(current).getString("sessionId");
+        } catch (Exception e) {
+            storedSessionId = null;
+        }
+
+        if (storedSessionId != null && storedSessionId.equals(sessionId)) {
+            JSONObject value = new JSONObject();
+            value.put("username", username);
+            value.put("sessionId", sessionId);
+            redisTemplate.opsForValue().set(key, value.toJSONString(), 10, TimeUnit.SECONDS);
+        }
     }
 }
