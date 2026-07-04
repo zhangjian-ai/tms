@@ -25,19 +25,18 @@ class Port:
         while True:
             port = random.randint(start, end)
 
-            if cls.in_use(port):
+            if cls.is_available(port):
                 return port
 
     @classmethod
-    def in_use(cls, port):
-        """检查端口是否未被占用"""
+    def is_available(cls, port):
+        """检查端口当前是否空闲（可绑定）"""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                # 尝试绑定端口，如果成功说明端口未被占用
                 s.bind(('0.0.0.0', port))
-                return True  # 端口可用
+                return True
             except OSError:
-                return False  # 端口被占用
+                return False
 
 
 class Host:

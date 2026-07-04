@@ -19,9 +19,10 @@ import java.time.Duration;
 public class RedisConfig {
     private String statusPrefix;
     private String holderPrefix;
+    private String connectionPrefix;
 
     /**
-     * 配置 Lettuce 客户端选项，解决连接超时问题
+     * 配置 Lettuce 客户端选项
      */
     @Bean
     public LettuceClientConfigurationBuilderCustomizer lettuceClientConfigurationBuilderCustomizer() {
@@ -29,7 +30,7 @@ public class RedisConfig {
             // Socket 配置
             SocketOptions socketOptions = SocketOptions.builder()
                     .keepAlive(true)  // 启用 TCP keepalive
-                    .tcpNoDelay(true)  // 禁用 Nagle 算法，减少延迟
+                    .tcpNoDelay(true)  // 禁用 Nagle 算法
                     .connectTimeout(Duration.ofSeconds(10))  // 连接超时
                     .build();
 

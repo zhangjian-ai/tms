@@ -9,7 +9,6 @@
     "postinstall": "cp node_modules/mind-elixir/dist/MindElixir.css public/MindElixir.css"
   },
   "dependencies": {
-    "@easydarwin/easyplayer": "^5.1.4",
     "axios": "^1.6.2",
     "core-js": "^3.8.3",
     "element-plus": "^2.10.7",
@@ -18,7 +17,6 @@
     "mind-elixir": "^5.11.0",
     "pako": "^2.1.0",
     "pinia": "^3.0.4",
-    "video.js": "^8.23.4",
     "vue": "^3.2.13",
     "vue-router": "^4.5.1"
   },

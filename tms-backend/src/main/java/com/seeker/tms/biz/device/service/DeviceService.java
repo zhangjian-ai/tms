@@ -1,6 +1,7 @@
 package com.seeker.tms.biz.device.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.alibaba.fastjson.JSONObject;
 import com.seeker.tms.biz.device.entities.DeviceHoldDTO;
 import com.seeker.tms.biz.device.entities.DevicePO;
 import com.seeker.tms.biz.device.entities.DeviceQueryDTO;
@@ -15,5 +16,7 @@ public interface DeviceService extends IService<DevicePO> {
     DevicePO detailById(Integer id);
 
     boolean deviceHold(DeviceHoldDTO deviceHoldDTO);
+
+    JSONObject getConnectionById(Integer id);
 
 }

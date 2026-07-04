@@ -1,7 +1,7 @@
 package com.seeker.tms.biz.device.controller;
 
+import com.alibaba.fastjson.JSONObject;
 import com.seeker.tms.biz.device.entities.*;
-import com.seeker.tms.biz.device.service.DeviceConnectionService;
 import com.seeker.tms.biz.device.service.DeviceService;
 import com.seeker.tms.common.entities.PageResult;
 import com.seeker.tms.common.utils.Result;
@@ -21,8 +21,6 @@ import javax.validation.Valid;
 public class DeviceController {
 
     private final DeviceService deviceService;
-
-    private final DeviceConnectionService deviceConnectionService;
 
     @ApiOperation("设备列表")
     @GetMapping("/list")
@@ -47,8 +45,8 @@ public class DeviceController {
 
     @ApiOperation("根据ID查询设备连接信息")
     @GetMapping("/getConnectionById")
-    public Result<DeviceConnectionPO> getConnectionById(@RequestParam Integer id){
-        DeviceConnectionPO connectionById = deviceConnectionService.getConnectionById(id);
+    public Result<JSONObject> getConnectionById(@RequestParam Integer id){
+        JSONObject connectionById = deviceService.getConnectionById(id);
         return Result.success(connectionById);
     }
 }

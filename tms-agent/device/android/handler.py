@@ -48,14 +48,25 @@ def get_device_hierarchy_xml(device, compress=True):
 
 
 def _device_online(device_manager, serial) -> bool:
-    """校验设备是否在线（拒绝已拔出/离线设备的连接）。
-
-    只看 online：设备是否物理在线才是能否连接的判据；init 只是工具就绪标记，
-    且 scrcpy 会在 prepare_server 自行推送 server，不依赖 init。
-    """
+    """校验设备是否在线。"""
     if not device_manager or serial not in device_manager.devices:
         return False
     return device_manager.devices[serial].online
+
+
+def _device_occupied(device_manager, serial) -> bool:
+    """设备是否已被占用。"""
+    if not device_manager or serial not in device_manager.devices:
+        return False
+    return device_manager.devices[serial].occupied
+
+
+def _device_cast_allowed(device_manager, serial) -> bool:
+    """是否允许投屏：需已占用且 cast=True。"""
+    if not device_manager or serial not in device_manager.devices:
+        return False
+    d = device_manager.devices[serial]
+    return d.occupied and d.cast
 
 
 class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
@@ -77,12 +88,22 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
         self.serial = serial
         self.streaming = False
 
-        # 设备在线校验：不在线/未就绪直接拒绝，避免对已拔设备误报连接成功
+        # 设备在线校验
         if not _device_online(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
                     "type": "error",
                     "message": f"设备不在线或未就绪: {serial}"
+                }))
+            self.close()
+            return
+
+        # 投屏校验
+        if not _device_cast_allowed(self.device_manager, serial):
+            if self.ws_connection and not self.ws_connection.is_closing():
+                self.write_message(json.dumps({
+                    "type": "error",
+                    "message": "设备未开启投屏"
                 }))
             self.close()
             return
@@ -155,7 +176,7 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
                     }))
                 return
 
-            # 同一设备只允许一个投屏：已被其他页面占用投屏时直接拒绝
+            # 同一设备只允许一个投屏
             if scrcpy_manager.has_active_client(self.serial, exclude=self):
                 if self.ws_connection and not self.ws_connection.is_closing():
                     await self.write_message(json.dumps({
@@ -222,8 +243,7 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
 
         if self.streaming and self.serial:
             self.streaming = False
-            # 使用引用计数式停流：仅当本设备再无投屏客户端时才真正停止，
-            # 避免某个页面关闭时销毁共享实例、误伤其它页面的投屏
+            # 引用计数式停流：本设备再无投屏客户端时才真正停止
             tornado.ioloop.IOLoop.current().add_callback(
                 scrcpy_manager.stop_device_stream,
                 self.serial,
@@ -246,11 +266,11 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
         """允许跨域"""
         return True
 
-    def open(self, serial):
+    async def open(self, serial):
         """WebSocket连接建立"""
         self.serial = serial
 
-        # 设备在线校验（对齐 iOS）
+        # 设备在线校验
         if not _device_online(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -260,13 +280,23 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             self.close()
             return
 
+        # 占用校验
+        if not _device_occupied(self.device_manager, serial):
+            if self.ws_connection and not self.ws_connection.is_closing():
+                self.write_message(json.dumps({
+                    "type": "error",
+                    "message": "设备未被占用"
+                }))
+            self.close()
+            return
+
         try:
             # 通过ADB客户端获取设备
-            self.device = u2.connect(self.serial)
+            self.device = await asyncio.to_thread(u2.connect, self.serial)
 
             # 获取并缓存设备分辨率
             try:
-                w, h = self.device.window_size()
+                w, h = await asyncio.to_thread(self.device.window_size)
                 self.device_resolution = (w, h)
             except Exception as e:
                 logger.warning(f"获取设备分辨率失败: {e}")
@@ -302,29 +332,11 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             elif msg_type == "screenshot":
                 tornado.ioloop.IOLoop.current().add_callback(self._handle_screenshot, data)
 
-            elif msg_type == "click":
-                tornado.ioloop.IOLoop.current().add_callback(self._handle_click, data)
-
-            elif msg_type == "long_click":
-                tornado.ioloop.IOLoop.current().add_callback(self._handle_long_click, data)
-
-            elif msg_type == "swipe":
-                tornado.ioloop.IOLoop.current().add_callback(self._handle_swipe, data)
-
-            elif msg_type == "input_text":
-                tornado.ioloop.IOLoop.current().add_callback(self._handle_input_text, data)
-
-            elif msg_type == "key_event":
-                tornado.ioloop.IOLoop.current().add_callback(self._handle_key_event, data)
-
             elif msg_type == "dump_hierarchy":
                 tornado.ioloop.IOLoop.current().add_callback(self._handle_dump_hierarchy, data)
 
             elif msg_type == "get_xml_only":
                 tornado.ioloop.IOLoop.current().add_callback(self._handle_get_xml_only, data)
-
-            elif msg_type == "device_info":
-                tornado.ioloop.IOLoop.current().add_callback(self._handle_device_info, data)
 
             else:
                 logger.warning(f"设备控制 WebSocket不支持的消息类型: {msg_type}")
@@ -349,11 +361,11 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
                 raise Exception("设备未连接")
 
             # PIL Image对象
-            screenshot_image = self.device.screenshot()
+            screenshot_image = await asyncio.to_thread(self.device.screenshot)
 
             # 将PIL Image转换为字节流
             buffer = io.BytesIO()
-            screenshot_image.save(buffer, format='PNG')
+            await asyncio.to_thread(screenshot_image.save, buffer, format='PNG')
             screenshot_bytes = buffer.getvalue()
 
             # 转换为base64
@@ -377,186 +389,10 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
                 "error": str(e)
             }))
 
-    async def _handle_click(self, data):
-        """处理点击请求"""
-        try:
-            if not self.device:
-                raise Exception("设备未连接")
-
-            x = data.get("x")
-            y = data.get("y")
-
-            if x is None or y is None:
-                raise Exception("缺少坐标参数")
-
-            device_x = int(x)
-            device_y = int(y)
-
-            self.device.click(device_x, device_y)
-
-            await self.write_message(json.dumps({
-                "type": "click_result",
-                "success": True,
-                "data": {
-                    "device_x": device_x,
-                    "device_y": device_y,
-                    "device_resolution": f"{self.device_resolution[0]}x{self.device_resolution[1]}" if self.device_resolution else "unknown"
-                }
-            }))
-
-        except Exception as e:
-            logger.error(f"点击失败: {e}")
-            await self.write_message(json.dumps({
-                "type": "click_result",
-                "success": False,
-                "error": str(e)
-            }))
-
-    async def _handle_long_click(self, data):
-        """处理长按请求"""
-        try:
-            if not self.device:
-                raise Exception("设备未连接")
-
-            x = data.get("x")
-            y = data.get("y")
-
-            if x is None or y is None:
-                raise Exception("缺少坐标参数")
-
-            device_x = int(x)
-            device_y = int(y)
-
-            self.device.long_click(device_x, device_y, 1.5)
-
-            await self.write_message(json.dumps({
-                "type": "long_click_result",
-                "success": True,
-                "data": {
-                    "device_x": device_x,
-                    "device_y": device_y,
-                    "device_resolution": f"{self.device_resolution[0]}x{self.device_resolution[1]}" if self.device_resolution else "unknown"
-                }
-            }))
-
-        except Exception as e:
-            logger.error(f"长按失败: {e}")
-            await self.write_message(json.dumps({
-                "type": "long_click_result",
-                "success": False,
-                "error": str(e)
-            }))
-
-    async def _handle_swipe(self, data):
-        """处理滑动请求"""
-        try:
-            if not self.device:
-                raise Exception("设备未连接")
-
-            start_x = data.get("start_x")
-            start_y = data.get("start_y")
-            end_x = data.get("end_x")
-            end_y = data.get("end_y")
-            duration = data.get("duration", 0.2)
-
-            if any(v is None for v in [start_x, start_y, end_x, end_y]):
-                raise Exception("缺少滑动坐标参数")
-
-            device_start_x = int(start_x)
-            device_start_y = int(start_y)
-            device_end_x = int(end_x)
-            device_end_y = int(end_y)
-
-            self.device.swipe(device_start_x, device_start_y, device_end_x, device_end_y, duration)
-
-            await self.write_message(json.dumps({
-                "type": "swipe_result",
-                "success": True,
-                "data": {
-                    "device_start_x": device_start_x,
-                    "device_start_y": device_start_y,
-                    "device_end_x": device_end_x,
-                    "device_end_y": device_end_y,
-                    "duration": duration,
-                    "device_resolution": f"{self.device_resolution[0]}x{self.device_resolution[1]}" if self.device_resolution else "unknown"
-                }
-            }))
-
-        except Exception as e:
-            logger.error(f"滑动失败: {e}")
-            await self.write_message(json.dumps({
-                "type": "swipe_result",
-                "success": False,
-                "error": str(e)
-            }))
-
-    async def _handle_input_text(self, data):
-        """处理文本输入请求"""
-        try:
-            if not self.device:
-                raise Exception("设备未连接")
-
-            text = data.get("text")
-            if not text:
-                raise Exception("缺少文本参数")
-
-            self.device.send_keys(text)
-
-            await self.write_message(json.dumps({
-                "type": "input_text_result",
-                "success": True,
-                "data": {"text": text}
-            }))
-
-        except Exception as e:
-            logger.error(f"文本输入失败: {e}")
-            await self.write_message(json.dumps({
-                "type": "input_text_result",
-                "success": False,
-                "error": str(e)
-            }))
-
-    async def _handle_key_event(self, data):
-        """处理按键事件请求"""
-        try:
-            if not self.device:
-                raise Exception("设备未连接")
-
-            key = data.get("key")
-            if not key:
-                raise Exception("缺少按键参数")
-
-            # 映射按键名称到Android keycode
-            key_mapping = {
-                'home': 'KEYCODE_HOME',
-                'back': 'KEYCODE_BACK',
-                'menu': 'KEYCODE_MENU',
-                'power': 'KEYCODE_POWER',
-                'volume_up': 'KEYCODE_VOLUME_UP',
-                'volume_down': 'KEYCODE_VOLUME_DOWN'
-            }
-
-            keycode = key_mapping.get(key.lower(), key)
-            self.device.keyevent(keycode)
-
-            await self.write_message(json.dumps({
-                "type": "key_event_result",
-                "success": True,
-                "data": {"key": key}
-            }))
-
-        except Exception as e:
-            logger.error(f"按键事件失败: {e}")
-            await self.write_message(json.dumps({
-                "type": "key_event_result",
-                "success": False,
-                "error": str(e)
-            }))
-
     async def _handle_dump_hierarchy(self, data):
         """处理UI层次结构导出请求"""
         try:
-            xml_data = get_device_hierarchy_xml(self.device, compress=True)
+            xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=True)
 
             await self.write_message(json.dumps({
                 "type": "dump_hierarchy_result",
@@ -580,7 +416,7 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
     async def _handle_get_xml_only(self, data):
         """仅获取XML内容（用于变化检测）"""
         try:
-            xml_data = get_device_hierarchy_xml(self.device, compress=True)
+            xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=True)
 
             await self.write_message(json.dumps({
                 "type": "xml_only",
@@ -597,32 +433,6 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             logger.error(f"获取XML内容失败: {e}")
             await self.write_message(json.dumps({
                 "type": "xml_only",
-                "success": False,
-                "error": str(e)
-            }))
-
-    async def _handle_device_info(self, data):
-        """处理设备信息请求"""
-        try:
-            if not self.device:
-                raise Exception("设备未连接")
-
-            info = self.device.device_info
-            info["display"] = self.device.window_size()
-
-            await self.write_message(json.dumps({
-                "type": "device_info_result",
-                "success": True,
-                "data": {
-                    "info": info,
-                    "timestamp": datetime.now().isoformat()
-                }
-            }))
-
-        except Exception as e:
-            logger.error(f"获取设备信息失败: {e}")
-            await self.write_message(json.dumps({
-                "type": "device_info_result",
                 "success": False,
                 "error": str(e)
             }))
@@ -647,11 +457,11 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
         """允许跨域"""
         return True
 
-    def open(self, serial):
+    async def open(self, serial):
         """WebSocket连接建立"""
         self.serial = serial
 
-        # 设备在线校验（对齐 iOS）
+        # 设备在线校验
         if not _device_online(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -661,13 +471,23 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             self.close()
             return
 
+        # 占用校验
+        if not _device_occupied(self.device_manager, serial):
+            if self.ws_connection and not self.ws_connection.is_closing():
+                self.write_message(json.dumps({
+                    "type": "error",
+                    "message": "设备未被占用"
+                }))
+            self.close()
+            return
+
         try:
             # 通过ADB客户端获取设备
-            self.device = u2.connect(self.serial)
+            self.device = await asyncio.to_thread(u2.connect, self.serial)
 
             # 获取并缓存设备分辨率
             try:
-                w, h = self.device.window_size()
+                w, h = await asyncio.to_thread(self.device.window_size)
                 self.device_resolution = (w, h)
             except Exception as e:
                 logger.warning(f"获取设备分辨率失败: {e}")
@@ -735,7 +555,7 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
                 raise Exception("设备未连接")
 
             # 使用通用函数获取UI层次结构XML（不压缩，因为需要解析）
-            xml_data = get_device_hierarchy_xml(self.device, compress=False)
+            xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=False)
             hierarchy_xml = xml_data["xml"]
 
             # 解析XML为结构化数据
@@ -887,27 +707,27 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
 
             result = None
             if action == "click":
-                self.device.click(center_x, center_y)
+                await asyncio.to_thread(self.device.click, center_x, center_y)
                 result = f"点击元素 ({center_x}, {center_y})"
 
             elif action == "long_click":
-                self.device.long_click(center_x, center_y, 1.5)
+                await asyncio.to_thread(self.device.long_click, center_x, center_y, 1.5)
                 result = f"长按元素 ({center_x}, {center_y})"
 
             elif action == "input_text":
                 text = data.get("text", "")
                 if not text:
                     raise Exception("缺少输入文本")
-                self.device.click(center_x, center_y)
+                await asyncio.to_thread(self.device.click, center_x, center_y)
                 await asyncio.sleep(0.1)
-                self.device.send_keys(text)
+                await asyncio.to_thread(self.device.send_keys, text)
                 result = f"在元素中输入: {text}"
 
             elif action == "clear_text":
-                self.device.click(center_x, center_y)
+                await asyncio.to_thread(self.device.click, center_x, center_y)
                 await asyncio.sleep(0.1)
-                self.device.keyevent("KEYCODE_CTRL_A")
-                self.device.keyevent("KEYCODE_DEL")
+                await asyncio.to_thread(self.device.keyevent, "KEYCODE_CTRL_A")
+                await asyncio.to_thread(self.device.keyevent, "KEYCODE_DEL")
                 result = "清空元素文本"
 
             else:
@@ -940,7 +760,7 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
                 raise Exception("缺少元素选择器")
 
             # 实时获取UI层次结构（确保数据最新）
-            xml_data = get_device_hierarchy_xml(self.device, compress=False)
+            xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=False)
             hierarchy_xml = xml_data["xml"]
 
             root = ET.fromstring(hierarchy_xml)
@@ -1012,21 +832,21 @@ class AndroidProxyServer:
     def _exec(args: list):
         """执行一条 adb 命令（统一二进制，不用 shell）"""
         cmd = [get_adb_bin()] + args
-        logger.info(" ".join(cmd))
+        # logger.info(" ".join(cmd))
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return proc.stdout.read().decode()
 
     def init_env(self):
         port = str(self.config["adb"]["port"])
-        # 停止可能残留的默认(5037)与指定端口 server
+        # 停止残留 server
         self._exec(["kill-server"])
         self._exec(["-P", port, "kill-server"])
-        # -a 让 server 监听所有网卡（远程主机据此直连设备），统一 adb 二进制避免版本不匹配触发重启
+        # -a 让 server 监听所有网卡
         self._exec(["-a", "-P", port, "start-server"])
 
     def make_app(self):
         """创建Tornado应用 - 三个WebSocket接口"""
-        # 将设备管理器注入各 WebSocket handler，供设备在线校验
+        # 注入设备管理器
         if self.device_manager:
             ScrcpyWebSocket.device_manager = self.device_manager
             DeviceControlWebSocket.device_manager = self.device_manager

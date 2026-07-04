@@ -41,30 +41,32 @@ public class DeviceHoldHandler extends TextWebSocketHandler {
 
         // 根据消息类型处理
         String serial = payload.getString("serial");
-        String username = payload.getString("username");
         String sessionId = payload.getString("sessionId");
 
         String key = redisConfig.getHolderPrefix() + serial;
 
-        // 按会话续约：仅当占用键存在且其 sessionId 与本心跳一致时才刷新，
-        // 防止第二个会话的心跳误续或覆盖当前持有者
+        // 按会话续约：仅当占用键存在且 sessionId 与本心跳一致时刷新
         String current = redisTemplate.opsForValue().get(key);
         if (current == null) {
             return;
         }
 
         String storedSessionId;
+        boolean cast;
         try {
-            storedSessionId = JSON.parseObject(current).getString("sessionId");
+            JSONObject stored = JSON.parseObject(current);
+            storedSessionId = stored.getString("sessionId");
+            cast = stored.getBooleanValue("cast");
         } catch (Exception e) {
             storedSessionId = null;
+            cast = false;
         }
 
         if (storedSessionId != null && storedSessionId.equals(sessionId)) {
-            JSONObject value = new JSONObject();
-            value.put("username", username);
-            value.put("sessionId", sessionId);
-            redisTemplate.opsForValue().set(key, value.toJSONString(), 10, TimeUnit.SECONDS);
+            // 仅 cast=true 才续约：延长 TTL，不重写值（保住 cast 等字段）
+            if (cast) {
+                redisTemplate.expire(key, 10, TimeUnit.SECONDS);
+            }
         }
     }
 }

@@ -88,7 +88,7 @@
       <div class="screen-area">
         <div class="screen-header">
           <h3>设备投屏</h3>
-          <!-- 功能按钮（与 Android 对齐：唤醒、HOME、截屏、Dump XML、元素检查器） -->
+          <!-- 功能按钮 -->
           <div class="header-controls" v-if="isConnected && videoResolution.width > 0">
             <el-button
               type="warning"
@@ -203,7 +203,6 @@
                 <span class="log-time">{{ formatTime(log.timestamp) }}</span>
               </div>
               <div class="log-details">
-                <!-- 如果有元素信息，显示元素详情 -->
                 <div v-if="log.element" class="element-info">
                   <!-- 文本信息单独一行 -->
                   <div v-if="log.element.label || log.element.name" class="element-text-row">
@@ -231,7 +230,7 @@
                     <span v-if="log.element.enabled === 'false'" class="disabled">禁用</span>
                   </div>
                 </div>
-                <!-- 如果没有元素信息，只显示坐标 -->
+                <!-- 无元素信息时只显示坐标 -->
                 <div v-else class="action-info">
                   <span v-if="log.coordinates" class="coordinates" @click="copyToClipboard(log.coordinates, '坐标')">
                     <span class="property-label">坐标:</span>{{ log.coordinates }}
@@ -254,10 +253,11 @@ import { Camera, Document, Loading, Sunny, HomeFilled, Monitor, Search, Delete, 
 import { deviceApi } from '@/api/device'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
+import { useIdleRelease } from '@/composables/useIdleRelease'
 import config from '@/config/index.js'
 import pako from 'pako'
 
-// 生成会话令牌（内存态，绝不放进 URL）
+// 生成会话令牌
 const genSessionId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID()
@@ -270,17 +270,16 @@ const router = useRouter()
 const userStore = useUserStore()
 const deviceSessionStore = useDeviceSessionStore()
 
-// 设备序列号（用于 WebSocket 路径，来自路由）
+// 设备序列号（用于 WebSocket 路径）
 const deviceSerial = ref(route.query.serial || '')
 
-// 设备 ID（用于接口与释放）
+// 设备 ID
 const deviceId = ref(route.params.id ? Number(route.params.id) : null)
 
-// 本页会话令牌：优先沿用列表页占用时生成的 sessionId（同标签导航）；
-// 复制标签/直接输 URL 时为空，则在 onMounted 时自行占用并生成新令牌。仅存于内存，绝不写入 URL。
+// 本页会话令牌：优先沿用列表页占用时的 sessionId，否则 onMounted 时自行占用
 let sessionId = deviceSessionStore.getSession(deviceId.value)
 
-// 连接信息（与 Android 同结构：代理用 proxy_*，iOS 下 adb_host/adb_port 表示 WDA；mjpeg_port 仅 agent 内部使用，web 不关心）
+// 连接信息（iOS 下 adb_host/adb_port 表示 WDA 地址）
 const connectionInfo = reactive({
   proxyHost: '',
   proxyPort: '',
@@ -297,7 +296,7 @@ let controlWs = null
 let screenWs = null
 let inspectorWs = null
 
-// 视频分辨率（与真实屏幕一致，用于投屏展示比例与坐标换算）
+// 视频分辨率
 const videoResolution = reactive({
   width: 0,
   height: 0,
@@ -317,7 +316,7 @@ const mouseState = reactive({
   beganAt: null  // 按下时间，用于区分点击/长按
 })
 
-// 操作进行中标志，防止重复操作
+// 操作进行中标志
 let operationPending = false
 
 // 滚轮防抖
@@ -340,7 +339,7 @@ let xmlCheckTimer = null
 let lastXmlHash = ref('')
 let elementHoverTimer = null
 
-// 获取 WDA URL（iOS 使用 adb_host/adb_port 表示 WDA 服务地址）
+// 获取 WDA URL
 const getWDAUrl = () => {
   if (!connectionInfo.adbHost || !connectionInfo.adbPort) {
     return '-'
@@ -348,12 +347,12 @@ const getWDAUrl = () => {
   return `http://${connectionInfo.adbHost}:${connectionInfo.adbPort}`
 }
 
-// 从后端获取设备连接信息（与 Android 同结构：proxy 为代理，iOS 下 adb_host/adb_port 为 WDA）
+// 从后端获取设备连接信息
 const fetchConnectionInfo = async () => {
-  if (!deviceId.value) return
-  loading.value = true
+  if (!deviceId.value) return false
   try {
     const res = await deviceApi.getDeviceConnection(deviceId.value)
+    // 代理未起时 data 可能为 null，静默等待轮询
     if (res.code === 0 && res.data) {
       const d = res.data
       connectionInfo.proxyHost = d.proxyHost || ''
@@ -362,8 +361,21 @@ const fetchConnectionInfo = async () => {
       connectionInfo.adbPort = d.adbPort != null ? String(d.adbPort) : ''
     }
   } catch (e) {
-    console.error('获取连接信息失败:', e)
-    ElMessage.error('获取连接信息失败')
+    // 轮询期间静默
+  }
+  return !!(connectionInfo.proxyHost && connectionInfo.proxyPort)
+}
+
+// 有界轮询等待代理就绪
+const waitForConnectionReady = async (timeoutMs = 40000, intervalMs = 1500) => {
+  loading.value = true
+  const start = Date.now()
+  try {
+    while (Date.now() - start < timeoutMs) {
+      if (await fetchConnectionInfo()) return true
+      await new Promise(r => setTimeout(r, intervalMs))
+    }
+    return await fetchConnectionInfo()
   } finally {
     loading.value = false
   }
@@ -379,7 +391,7 @@ const copyWDACommand = () => {
   })
 }
 
-// 与 Android 一致：按可视区域与真实分辨率比例计算投屏展示尺寸
+// 按可视区域与真实分辨率比例计算投屏展示尺寸
 const adjustScreenContainer = () => {
   const wrapper = videoWrapperRef.value
   if (!wrapper || !videoResolution.width || !videoResolution.height) return
@@ -399,7 +411,7 @@ const adjustScreenContainer = () => {
     const connectionWidth = connectionArea ? connectionArea.offsetWidth : 350
     const maxVideoWidth = mainContent.clientWidth - connectionWidth - 36
 
-    // iOS 设备逻辑分辨率按比例缩放一下，这样在页面上看着更真实
+    // iOS 逻辑分辨率按比例缩放
     const scaleFactor = 0.8
     let targetWidth = vw * scaleFactor
     let targetHeight = vh * scaleFactor
@@ -427,7 +439,7 @@ const adjustScreenContainer = () => {
   }
 }
 
-// 发送控制消息（与 Android 一致）
+// 发送控制消息
 const sendControlMessage = (message) => {
   if (controlWs && controlWs.readyState === WebSocket.OPEN) {
     controlWs.send(JSON.stringify(message))
@@ -436,7 +448,7 @@ const sendControlMessage = (message) => {
   }
 }
 
-// 连接设备（通过代理服务与 agent 建立 WebSocket）
+// 连接设备
 const connectDevice = async () => {
   try {
     await fetchConnectionInfo()
@@ -459,7 +471,7 @@ const connectDevice = async () => {
   }
 }
 
-// 连接控制 WebSocket（经代理转发到 agent）
+// 连接控制 WebSocket
 const connectControlWebSocket = () => {
   return new Promise((resolve, reject) => {
     const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/control`
@@ -492,7 +504,7 @@ const connectControlWebSocket = () => {
   })
 }
 
-// 连接投屏 WebSocket（经代理转发到 agent）
+// 连接投屏 WebSocket
 const connectScreenWebSocket = () => {
   return new Promise((resolve, reject) => {
     const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/screen`
@@ -501,7 +513,6 @@ const connectScreenWebSocket = () => {
 
     screenWs.onopen = () => {
       console.log('投屏 WebSocket 连接成功')
-      // 投屏经 proxy 连接，agent 内部从 device_manager 获取 mjpeg_port，web 无需传递
       screenWs.send(JSON.stringify({ type: 'start_stream' }))
       resolve()
     }
@@ -600,7 +611,7 @@ const handleScreenMessage = (data) => {
       console.log('投屏已停止')
       break
     case 'device_disconnected':
-      // 设备被拔出/断开：立即反映到页面并清理连接
+      // 设备被拔出/断开：清理连接
       ElMessage.warning('设备已断开连接')
       isConnected.value = false
       if (controlWs) controlWs.close()
@@ -629,7 +640,7 @@ const renderBinaryFrame = (arrayBuffer) => {
   img.src = url
 }
 
-// 将事件坐标转换为设备坐标（与 Android 一致：按显示尺寸与真实分辨率换算）
+// 将事件坐标转换为设备坐标
 const getEventDeviceCoords = (clientX, clientY) => {
   const canvas = screenCanvas.value
   if (!canvas || !videoResolution.width || !videoResolution.height) return null
@@ -655,7 +666,7 @@ const handleMouseDown = (event) => {
 }
 
 const handleMouseMove = (event) => {
-  // 如果启用了元素检查器且没有按下鼠标，进行元素查找
+  // 未按下且启用元素检查器时进行元素查找
   if (!mouseState.isDown && elementInspectorEnabled.value && !operationPending) {
     const coords = getEventDeviceCoords(event.clientX, event.clientY)
     if (coords && videoResolution.width && videoResolution.height) {
@@ -674,7 +685,7 @@ const handleMouseMove = (event) => {
   }
 
   if (!isConnected.value || !mouseState.isDown) return
-  // iOS WDA 仅支持 tap/swipe 两种手势，拖动过程不发送中间点
+  // WDA 仅支持 tap/swipe，拖动过程不发送中间点
 }
 
 const handleMouseLeave = () => {
@@ -741,11 +752,11 @@ const enableCanvasTouch = () => {
   }
 }
 
-// 鼠标滚轮 → 转换为 swipe 手势（模拟页面滚动）
+// 鼠标滚轮 → swipe 手势
 const handleWheel = (event) => {
   if (!isConnected.value) return
 
-  // 记录滚动开始时的坐标（只在第一次滚动时记录）
+  // 记录滚动开始坐标
   if (!wheelStartCoords) {
     const coords = getEventDeviceCoords(event.clientX, event.clientY)
     if (!coords) return
@@ -760,7 +771,7 @@ const handleWheel = (event) => {
     clearTimeout(wheelDebounceTimer)
   }
 
-  // 设置新的防抖定时器，在滚动停止 150ms 后执行
+  // 滚动停止 150ms 后执行
   wheelDebounceTimer = setTimeout(() => {
     if (!wheelStartCoords) return
 
@@ -773,7 +784,7 @@ const handleWheel = (event) => {
       return
     }
 
-    // 将滚轮偏移量映射为设备上的滑动距离（屏幕高度的 1/4 为上限）
+    // 滚轮偏移映射为滑动距离（上限为屏幕高度 1/4）
     const maxSwipe = videoResolution.height * 0.25
     const swipeDistance = Math.min(Math.abs(scrollAmount) * 1.5, maxSwipe)
     const direction = scrollAmount > 0 ? 1 : -1
@@ -808,7 +819,7 @@ const handleTouchEnd = (event) => {
   handleMouseUp({ clientX: t.clientX, clientY: t.clientY, preventDefault: () => {} })
 }
 
-// 发送点击 - 返回 Promise，等待 WDA 响应
+// 发送点击 - 返回 Promise
 const sendClick = (x, y) => {
   // 记录操作日志
   if (elementInspectorEnabled.value) {
@@ -828,7 +839,7 @@ const sendClick = (x, y) => {
   return new Promise((resolve) => {
     pendingResolve = resolve
     sendControlMessage({ type: 'click', x, y })
-    // 超时兜底，防止永远卡住
+    // 超时兜底
     setTimeout(resolve, 5000)
   })
 }
@@ -842,7 +853,7 @@ const sendLongClick = (x, y, duration) => {
   })
 }
 
-// 发送滑动 - 返回 Promise，duration 100ms（参考实现验证的最佳值）
+// 发送滑动 - duration 100ms
 const sendSwipe = (startX, startY, endX, endY) => {
   // 记录操作日志
   if (elementInspectorEnabled.value) {
@@ -880,7 +891,7 @@ const sendSwipe = (startX, startY, endX, endY) => {
 // 等待 WDA 操作完成的回调
 let pendingResolve = null
 
-// 控制消息响应处理（在 controlWs.onmessage 中调用）
+// 控制消息响应处理
 const resolveControlResponse = (msg) => {
   const resultTypes = ['click_result', 'long_click_result', 'swipe_result']
   if (resultTypes.includes(msg.type) && pendingResolve) {
@@ -890,22 +901,22 @@ const resolveControlResponse = (msg) => {
   }
 }
 
-// 截屏（与 Android 一致，通过控制 WebSocket）
+// 截屏
 const handleScreenshot = () => {
   sendControlMessage({ type: 'screenshot' })
 }
 
-// Dump XML（与 Android 一致）
+// Dump XML
 const handleDumpXml = () => {
   sendControlMessage({ type: 'dump_hierarchy' })
 }
 
-// HOME 键（与 Android 一致，经 agent 调用 WDA homescreen）
+// HOME 键
 const handleHomeKey = () => {
   sendControlMessage({ type: 'home' })
 }
 
-// 唤醒屏幕（与 Android 一致，经 agent 调用 WDA/设备）
+// 唤醒屏幕
 const handleWakeScreen = () => {
   sendControlMessage({ type: 'wake_screen' })
 }
@@ -919,7 +930,7 @@ const downloadScreenshot = (base64Image) => {
   ElMessage.success('截图已保存')
 }
 
-// 下载 XML（由 dump_hierarchy 结果回调，后端返回 gzip+base64 编码）
+// 下载 XML（后端返回 gzip+base64）
 const downloadXml = async (data) => {
   if (!data || !data.hierarchy) return
   try {
@@ -953,6 +964,23 @@ const saveXmlFile = (content) => {
 }
 
 // 释放设备
+// 静默释放：调后端释放 + 断连清理，供手动释放与空闲释放复用
+const teardownAndRelease = async () => {
+  if (!deviceId.value) return false
+  const res = await deviceApi.deviceHold({ id: deviceId.value, holder: null, sessionId })
+  if (res.code !== 0) {
+    ElMessage.error(res.msg || '释放失败')
+    return false
+  }
+  deviceSessionStore.clearSession(deviceId.value)
+  stopHoldHeartbeat()
+  if (controlWs) controlWs.close()
+  if (screenWs) screenWs.close()
+  if (inspectorWs) inspectorWs.close()
+  isConnected.value = false
+  return true
+}
+
 const releaseDevice = async () => {
   try {
     await ElMessageBox.confirm('确定要释放此设备吗？', '提示', {
@@ -960,31 +988,28 @@ const releaseDevice = async () => {
       cancelButtonText: '取消',
       type: 'warning'
     })
-    if (!deviceId.value) {
-      ElMessage.error('设备 ID 无效')
-      return
+  } catch {
+    return // 用户取消
+  }
+  try {
+    if (await teardownAndRelease()) {
+      ElMessage.success('设备已释放')
+      router.push({ name: 'Devices' })
     }
-    const res = await deviceApi.deviceHold({ id: deviceId.value, holder: null, sessionId })
-    if (res.code !== 0) {
-      ElMessage.error(res.msg || '释放失败')
-      return
-    }
-    deviceSessionStore.clearSession(deviceId.value)
-    if (controlWs) controlWs.close()
-    if (screenWs) screenWs.close()
-    if (inspectorWs) inspectorWs.close()
-    isConnected.value = false
-    ElMessage.success('设备已释放')
-    router.push({ name: 'Devices' })
   } catch (error) {
-    if (error !== 'cancel') {
-      console.error('释放设备失败:', error)
-      ElMessage.error('释放设备失败')
-    }
+    console.error('释放设备失败:', error)
+    ElMessage.error('释放设备失败')
   }
 }
 
-// 窗口 resize 时重新计算投屏展示尺寸（与 Android 一致，防抖）
+// 长时间切走页面则自动释放并在回到页面时提示
+useIdleRelease({
+  isActive: () => isConnected.value,
+  release: teardownAndRelease,
+  onReleased: () => router.push({ name: 'Devices' })
+})
+
+// 窗口 resize 时重新计算投屏展示尺寸（防抖）
 const handleWindowResize = () => {
   if (resizeTimer) clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => {
@@ -1106,7 +1131,8 @@ const decompressXml = async (data) => {
       for (let i = 0; i < binaryStr.length; i++) {
         bytes[i] = binaryStr.charCodeAt(i)
       }
-      const decompressed = pako.inflate(bytes, { to: 'string' })
+      // 后端用 gzip 压缩，需 ungzip
+      const decompressed = pako.ungzip(bytes, { to: 'string' })
       return decompressed
     } else {
       return data.xml
@@ -1338,7 +1364,7 @@ const stopHoldHeartbeat = () => {
   }
 }
 
-// 确保本页持有设备占用：继承自列表页则沿用；否则自行原子占用，失败即拒绝投屏
+// 确保本页持有设备占用：继承自列表页则沿用，否则自行原子占用
 const ensureHold = async () => {
   if (sessionId) return true
 
@@ -1350,7 +1376,7 @@ const ensureHold = async () => {
 
   const newSession = genSessionId()
   try {
-    const res = await deviceApi.deviceHold({ id: deviceId.value, holder, sessionId: newSession })
+    const res = await deviceApi.deviceHold({ id: deviceId.value, holder, sessionId: newSession, cast: true })
     if (!res || res.code !== 0) return false
   } catch (e) {
     return false
@@ -1361,7 +1387,7 @@ const ensureHold = async () => {
   return true
 }
 
-// 页面关闭/刷新时以 keepalive 方式释放占用（onBeforeUnmount 在这些场景不可靠）
+// 页面关闭/刷新时以 keepalive 方式释放占用
 const handlePageHide = () => {
   if (sessionId) {
     deviceApi.releaseHoldOnUnload({ id: deviceId.value, holder: null, sessionId })
@@ -1369,7 +1395,7 @@ const handlePageHide = () => {
 }
 
 onMounted(async () => {
-  // 先确认占用再投屏：同一设备只允许一个用户占用、只能在一个页面投屏
+  // 先确认占用再投屏
   const ok = await ensureHold()
   if (!ok) {
     try {
@@ -1382,16 +1408,32 @@ onMounted(async () => {
     return
   }
 
-  connectDevice()
-  window.addEventListener('resize', handleWindowResize)
-  window.addEventListener('pagehide', handlePageHide)
-  // 启动设备占用心跳
+  // 启动占用心跳续约
   if (deviceSerial.value) {
     startHoldHeartbeat()
   }
+
+  // 等待 agent 启动 WDA 代理并上报连接信息
+  const ready = await waitForConnectionReady()
+  if (!ready) {
+    ElMessage.error('设备代理启动超时，请重试')
+    stopHoldHeartbeat()
+    if (sessionId) {
+      deviceApi.deviceHold({ id: deviceId.value, holder: null, sessionId }).catch(() => {})
+      deviceSessionStore.clearSession(deviceId.value)
+    }
+    router.push({ name: 'Devices' })
+    return
+  }
+
+  connectDevice()
+  window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('pagehide', handlePageHide)
 })
 
 onBeforeUnmount(() => {
+  // 关闭可能仍打开的消息弹窗
+  ElMessageBox.close()
   if (resizeTimer) clearTimeout(resizeTimer)
   if (wheelDebounceTimer) clearTimeout(wheelDebounceTimer)
   if (xmlCheckTimer) clearTimeout(xmlCheckTimer)
@@ -1402,7 +1444,7 @@ onBeforeUnmount(() => {
   if (controlWs) controlWs.close()
   if (screenWs) screenWs.close()
   if (inspectorWs) inspectorWs.close()
-  // 仅释放本会话持有的占用（后端按 sessionId 校验），不会误删其它页面的占用
+  // 仅释放本会话持有的占用
   if (sessionId) {
     deviceApi.deviceHold({ id: deviceId.value, holder: null, sessionId }).catch(() => {})
     deviceSessionStore.clearSession(deviceId.value)

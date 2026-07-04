@@ -1,7 +1,6 @@
 import json
 import gzip
 import base64
-import asyncio
 import socket
 import io
 import time
@@ -12,7 +11,7 @@ import tornado.websocket
 from logzero import logger
 from typing import Any
 from tornado import httputil
-from tornado.iostream import IOStream
+from tornado.iostream import IOStream, StreamClosedError
 from datetime import datetime
 from PIL import Image
 
@@ -69,10 +68,10 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
 
     # 投屏参数
     TARGET_FPS = 25
-    # MJPEG 重压缩质量：0/None 表示透传设备原始帧（默认，省 CPU）；设为 1-95 才重编码
+    # MJPEG 重压缩质量：0 表示透传原始帧，1-95 才重编码
     JPEG_QUALITY = settings.get("ios", {}).get("proxy", {}).get("mjpeg_quality", 0)
 
-    # 每个 udid 当前活跃的投屏客户端，保证同一设备只允许一个投屏
+    # 每个 udid 当前活跃的投屏客户端
     _active_stream_clients = {}
 
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
@@ -80,7 +79,6 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
         self.udid = None
         self.mjpeg_port = None
         self.streaming = False
-        self.stream_task = None
         self._frame_interval = 1.0 / self.TARGET_FPS
 
     def check_origin(self, origin):
@@ -138,7 +136,7 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 }))
                 return
 
-            # 同一设备只允许一个投屏：已被其他存活客户端占用时直接拒绝
+            # 同一设备只允许一个投屏
             active = self._active_stream_clients.get(self.udid)
             if active is not None and active is not self \
                     and getattr(active, "ws_connection", None) is not None:
@@ -153,13 +151,19 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 device = self.device_manager.devices[self.udid]
                 if not device.online or not device.init:
                     raise Exception(f"设备 {self.udid} 未就绪")
+                # 投屏校验
+                if not (device.occupied and device.cast):
+                    await self.write_message(json.dumps({
+                        "type": "error",
+                        "message": "设备未开启投屏"
+                    }))
+                    self.streaming = False
+                    return
                 self.mjpeg_port = device.mjpeg_port
                 if not self.mjpeg_port:
                     raise Exception(f"设备 {self.udid} MJPEG 端口未分配")
             else:
-                # 兼容旧逻辑：从客户端消息获取（不推荐）
-                self.mjpeg_port = data.get("mjpeg_port", 9100)
-                logger.warning(f"无法从设备管理器获取端口，使用客户端提供的端口: {self.mjpeg_port}")
+                raise Exception(f"设备 {self.udid} 不存在或代理未启动")
 
             self.streaming = True
             # 登记为该设备当前投屏客户端
@@ -172,7 +176,7 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
             }))
 
             # 启动 MJPEG 流任务
-            self.stream_task = tornado.ioloop.IOLoop.current().spawn_callback(self._stream_mjpeg)
+            tornado.ioloop.IOLoop.current().spawn_callback(self._stream_mjpeg)
 
         except Exception as e:
             logger.error(f"启动 iOS 投屏失败: {e}")
@@ -200,7 +204,7 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                     continue
                 last_frame_time = now
 
-                # 默认透传设备原始 JPEG；仅当配置了 JPEG_QUALITY 时才重编码（省 CPU）
+                # 透传原始 JPEG，配置了 JPEG_QUALITY 时才重编码
                 if self.JPEG_QUALITY:
                     try:
                         img = Image.open(io.BytesIO(jpeg_data))
@@ -212,18 +216,26 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
 
                 await self.write_message(jpeg_data, binary=True)
 
-            # 流在仍需推送时结束（生成器耗尽），通常是设备断开/转发失效
+            # 流意外结束（生成器耗尽）
             if self.streaming:
                 disconnected = True
 
+        except tornado.websocket.WebSocketClosedError:
+            # 前端 WS 已关闭（客户端主动断开）；须先于 StreamClosedError 捕获
+            logger.info(f"iOS 投屏客户端断开（页面关闭/切走）: {self.udid}")
+        except StreamClosedError:
+            # MJPEG 转发 socket 关闭（设备释放/拔线）；仅在仍推流时才视为源断开
+            if self.streaming:
+                logger.info(f"iOS MJPEG 源已关闭，结束投屏（设备释放或断开）: {self.udid}")
+                disconnected = True
         except Exception as e:
-            # 读取中断多为设备被拔出、go-ios 转发失效
+            # 其余为真正异常
             logger.error(f"iOS MJPEG 流异常: {e}")
             disconnected = True
         finally:
             self.streaming = False
 
-        # 设备断开：主动通知并关闭前端投屏连接，让 web 立即感知（对齐 Android）
+        # 设备断开：通知并关闭前端投屏连接
         if disconnected:
             try:
                 if self.ws_connection and not self.ws_connection.is_closing():
@@ -247,7 +259,7 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
             logger.error(f"停止 iOS 投屏失败: {e}")
 
     def _release_active_client(self):
-        """释放本客户端对该设备投屏槽位的占用（仅当登记的就是自己）"""
+        """释放本客户端对该设备投屏槽位的占用。"""
         if self._active_stream_clients.get(self.udid) is self:
             self._active_stream_clients.pop(self.udid, None)
 
@@ -590,7 +602,7 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
 
 
 class IOSElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
-    """iOS 元素检查器 WebSocket - 独立通道，避免占用控制 WebSocket"""
+    """iOS 元素检查器 WebSocket - 独立通道。"""
 
     device_manager = None
 

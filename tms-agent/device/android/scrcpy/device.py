@@ -6,22 +6,19 @@ import json
 import adbutils
 import subprocess
 
-from pathlib import Path
 from typing import List
 
 from logzero import logger
-from bitstring import BitStream
-from h26x_extractor.nalutypes import SPS
 from tornado.websocket import WebSocketHandler
 
 from device.android.scrcpy.adb import AdbClient
 from device.android.tools.adb import get_adb_config, adb_cmd
 from device.android.tools.install import AndroidToolDownloader, DOWNLOAD_DIR
 
-# 与 install.py 共用同一目录（device/android/tools/static），scrcpy-server 缺失时可自愈下载
+# 与 install.py 共用同一目录（device/android/tools/static）
 STATIC_DIR = DOWNLOAD_DIR
 
-# scrcpy-server 版本（2.x 协议：scid 命名 socket、12 字节视频头、video_bit_rate 等新参数）
+# scrcpy-server 版本
 SCRCPY_VERSION = "2.7"
 
 
@@ -43,7 +40,7 @@ class ScrcpyDevice:
 
         self.name = None
         self.resolution = None
-        self.scid = None  # scrcpy 2.x 的会话 id，决定 localabstract socket 名 scrcpy_<scid>
+        self.scid = None  # scrcpy 2.x 会话 id，决定 socket 名 scrcpy_<scid>
 
         self.async_lock = asyncio.Lock()
 
@@ -73,7 +70,8 @@ class ScrcpyDevice:
 
             for cmd in cleanup_commands:
                 try:
-                    result = subprocess.run(
+                    result = await asyncio.to_thread(
+                        subprocess.run,
                         adb_cmd("shell", cmd, serial=self.serial),
                         capture_output=True, text=True, timeout=10
                     )
@@ -93,7 +91,7 @@ class ScrcpyDevice:
             await self.cleanup_existing_scrcpy_processes()
 
             cfg = get_adb_config()
-            # adbutils 客户端连接目标用本机地址（server 监听 0.0.0.0 由 -a 控制）
+            # adbutils 客户端连接用本机地址
             adb_host = cfg["host"] if cfg["host"] != "0.0.0.0" else "127.0.0.1"
             adb_port = cfg["port"]
 
@@ -103,18 +101,18 @@ class ScrcpyDevice:
             server_zip = f"scrcpy-server-{SCRCPY_VERSION}.zip"
 
             try:
-                result = device.shell("ls /data/local/tmp/scrcpy-server")
+                result = await asyncio.to_thread(device.shell, "ls /data/local/tmp/scrcpy-server")
                 if "No such file" in result:
                     raise FileNotFoundError("scrcpy-server不存在")
             except Exception:
                 scrcpy_server_path = STATIC_DIR / "scrcpy-server"
                 scrcpy_zip_path = STATIC_DIR / server_zip
 
-                # 设备端 server 会被 scrcpy cleanup 删除，需按需重推；本地缺 zip 时自愈下载
+                # 设备端缺 server 则推送，本地缺 zip 则下载
                 if not scrcpy_server_path.exists():
                     if not scrcpy_zip_path.exists():
                         logger.info(f"[{self.serial}] 本地缺少 {server_zip}，尝试下载...")
-                        AndroidToolDownloader().download_scrcpy_server()
+                        await asyncio.to_thread(AndroidToolDownloader().download_scrcpy_server)
 
                     if scrcpy_zip_path.exists():
                         logger.info(f"[{self.serial}] 解压{server_zip}...")
@@ -132,13 +130,15 @@ class ScrcpyDevice:
 
                 if scrcpy_server_path.exists():
                     logger.info(f"[{self.serial}] 推送scrcpy-server...")
-                    push_result = subprocess.run(
+                    push_result = await asyncio.to_thread(
+                        subprocess.run,
                         adb_cmd("push", str(scrcpy_server_path), "/data/local/tmp/scrcpy-server", serial=self.serial),
                         capture_output=True, text=True, timeout=30
                     )
 
                     if push_result.returncode == 0:
-                        subprocess.run(
+                        await asyncio.to_thread(
+                            subprocess.run,
                             adb_cmd("shell", "chmod 755 /data/local/tmp/scrcpy-server", serial=self.serial),
                             capture_output=True, text=True, timeout=10
                         )
@@ -148,7 +148,7 @@ class ScrcpyDevice:
                 else:
                     raise ConnectionError("本地scrcpy-server文件不存在")
 
-            # scrcpy 2.x 参数（全部 key=value）：禁用音频保持单视频流，强制 h264 供前端解码
+            # scrcpy 2.x 参数（全部 key=value）
             self.scid = f"{random.getrandbits(31):08x}"
             scrcpy_cmd = [
                 "CLASSPATH=/data/local/tmp/scrcpy-server",
@@ -192,7 +192,7 @@ class ScrcpyDevice:
             await asyncio.sleep(2)
 
             if self.shell_socket.poll() is not None:
-                output = self.shell_socket.stdout.read()
+                output = await asyncio.to_thread(self.shell_socket.stdout.read)
                 error_output = output if output else "无输出"
                 logger.error(f"[{self.serial}] scrcpy-server进程退出，输出: {error_output}")
                 raise ConnectionError(f"scrcpy-server启动失败: {error_output}")
@@ -268,15 +268,20 @@ class ScrcpyDevice:
             self.control_socket = None
 
     async def _video_task(self):
-        """视频数据处理任务"""
+        """视频数据处理任务：按起始码切分 NAL，规整为「单起始码 + 负载」逐个下发。"""
+        delimiter = b'\x00\x00\x00\x01'
         while True:
             try:
-                data = await self.video_socket.read_bytes_until(b'\x00\x00\x00\x01')
-                if data.endswith(b'\x00\x00\x00\x01'):
-                    current_nal_data = b'\x00\x00\x00\x01' + data
-
-                    for ws_client in self.ws_client_list:
-                        await ws_client.write_message(current_nal_data, binary=True)
+                # 去掉末尾分隔符，只保留本 NAL 负载并前置起始码
+                data = await self.video_socket.read_bytes_until(delimiter)
+                if not data.endswith(delimiter):
+                    continue
+                payload = data[:-len(delimiter)]
+                if not payload:
+                    continue  # 无负载可发
+                current_nal_data = delimiter + payload
+                for ws_client in self.ws_client_list:
+                    await ws_client.write_message(current_nal_data, binary=True)
 
             except ConnectionError:
                 logger.info(f"[{self.serial}] scrcpy连接断开")
@@ -285,12 +290,11 @@ class ScrcpyDevice:
                 logger.info(f"[{self.serial}] scrcpy连接异常: {str(e)}")
                 break
 
-        # 流异常结束（通常是设备断开）主动通知并关闭前端投屏连接，让 web 立即感知
-        # 注：用户主动停止/清理会 cancel 本任务（CancelledError），不会走到这里
+        # 流异常结束，通知并关闭前端投屏连接
         self._notify_stream_disconnected()
 
     def _notify_stream_disconnected(self):
-        """告知并关闭所有前端投屏 WS，使 web 端 onclose 立即触发"""
+        """通知并关闭所有前端投屏 WS。"""
         for ws_client in list(self.ws_client_list):
             try:
                 if ws_client.ws_connection and not ws_client.ws_connection.is_closing():
@@ -298,19 +302,6 @@ class ScrcpyDevice:
                     ws_client.close()
             except Exception:
                 pass
-
-    def update_resolution(self, current_nal_data: bytes):
-        """根据SPS帧更新分辨率"""
-        if current_nal_data.startswith(b'\x00\x00\x00\x01g'):
-            sps = SPS(BitStream(current_nal_data[5:]), False)
-            width = (sps.pic_width_in_mbs_minus_1 + 1) * 16
-            height = (2 - sps.frame_mbs_only_flag) * (sps.pic_height_in_map_units_minus_1 + 1) * 16
-
-            if width > height:
-                resolution = (max(self.resolution), min(self.resolution))
-            else:
-                resolution = (min(self.resolution), max(self.resolution))
-            self.resolution = resolution
 
     async def prepare(self):
         """准备scrcpy连接"""
@@ -327,10 +318,8 @@ class ScrcpyDevice:
             await self.cancel_task(self.video_data_transfer)
             self.video_data_transfer = None
 
-        # 设备离线路径（skip_device_cleanup=True）：cancel 会跳过 _video_task 的自我通知，
-        # 这里补一刀，确保前端投屏连接被关闭、web 立即感知
-        if skip_device_cleanup:
-            self._notify_stream_disconnected()
+        # 通知并关闭前端投屏 WS
+        self._notify_stream_disconnected()
 
         if self.control_socket:
             self.control_socket.disconnect()

@@ -1,9 +1,10 @@
 import json
-import traceback
 
 from typing import Optional, Tuple
 from logzero import logger
 from tornado import httpclient
+
+from utils.variables import settings
 
 """
 控制链路：Web → Agent(WebSocket) → AsyncHTTPClient(单例连接池) → localhost:port(端口转发) → 设备 WDA。
@@ -26,7 +27,7 @@ class WDAClient:
 
     async def _request(self, method: str, path: str, body=None, headers=None, timeout=30.0):
         """统一的 HTTP 请求方法"""
-        # tornado 要求 POST/PUT/PATCH 必须带 body，无参命令(如 unlock)补一个空 JSON
+        # POST/PUT/PATCH 必须带 body，无参命令补空 JSON
         if body is None and method in ("POST", "PUT", "PATCH"):
             body = b"{}"
         request = httpclient.HTTPRequest(
@@ -73,19 +74,56 @@ class WDAClient:
     async def create_session(self) -> bool:
         """创建会话：POST /session"""
         try:
+            caps = {
+                "shouldWaitForQuiescence": False,
+                "shouldUseCompactResponses": True,
+                "waitForIdleTimeout": 0,
+            }
             response = await self._request(
                 "POST", "/session",
-                body=json.dumps({"capabilities": {}}),
+                body=json.dumps({
+                    "capabilities": {"firstMatch": [{}], "alwaysMatch": caps},
+                    "desiredCapabilities": caps,
+                }),
                 headers={"Content-Type": "application/json"}
             )
             if response.code == 200:
                 data = self._json(response)
                 self.session_id = data.get("sessionId")
+                if not self.session_id:
+                    logger.error("WDA /session 返回 200 但缺少 sessionId")
+                    return False
+                await self._apply_settings()
                 return True
             return False
         except Exception as e:
             logger.error(f"创建 WDA 会话失败: {e}")
             return False
+
+    async def _apply_settings(self):
+        """会话级设置（best-effort，失败仅告警）。"""
+        if not self.session_id:
+            return
+        wda = settings.get("ios", {}).get("wda", {})
+        payload = {"settings": {
+            "waitForIdleTimeout": wda.get("wait_for_idle_timeout", 0),
+            "animationCoolOffTimeout": wda.get("animation_cool_off_timeout", 0),
+            "shouldUseCompactResponses": True,
+            "mjpegScalingFactor": wda.get("mjpeg_scaling_factor", 50),
+            "mjpegServerFramerate": wda.get("mjpeg_server_framerate", 20),
+            "mjpegServerScreenshotQuality": wda.get("mjpeg_server_quality", 40),
+        }}
+        try:
+            response = await self._request(
+                "POST", f"/session/{self.session_id}/appium/settings",
+                body=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+                timeout=5.0,
+            )
+            if response.code != 200:
+                logger.warning(f"应用 WDA 设置返回 {response.code}: {response.body}")
+        except Exception as e:
+            logger.warning(f"应用 WDA 设置失败: {e}")
 
     async def get_window_size(self) -> Optional[Tuple[int, int]]:
         """获取屏幕尺寸"""
@@ -139,7 +177,7 @@ class WDAClient:
         return resp is not None and resp.code == 200
 
     async def unlock(self) -> bool:
-        """点亮并解锁屏幕：WDA /session/{id}/wda/unlock（session 级，兼容新旧 WDA）"""
+        """点亮并解锁屏幕"""
         if not self.session_id:
             return False
         resp = await self._control_request("POST", f"/session/{self.session_id}/wda/unlock")

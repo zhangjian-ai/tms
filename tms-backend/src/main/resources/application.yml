@@ -102,6 +102,7 @@ spring:
 #  device:
 #    status-prefix: "ds_"
 #    holder-prefix: "dh_"
+#    connection-prefix: "dc_"
 #
 #minio:
 #  endpoint: http://host:port

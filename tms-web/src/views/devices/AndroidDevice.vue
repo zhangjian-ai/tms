@@ -23,6 +23,7 @@
             <el-descriptions :column="1" border>
               <el-descriptions-item label="连接状态">
                 <el-tag v-if="isConnected" type="success">已连接</el-tag>
+                <el-tag v-else-if="loading || connecting" type="info">连接中...</el-tag>
                 <el-tag v-else type="danger">未连接</el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="代理服务">
@@ -125,7 +126,6 @@
       <div class="screen-area">
         <div class="screen-header">
           <h3>设备投屏</h3>
-          <!-- 功能按钮区域移到标题行 -->
           <div class="header-controls" v-if="isConnected && videoResolution.width > 0">
             <el-button 
               type="warning" 
@@ -182,13 +182,13 @@
         <div class="screen-main">
           
           <div class="screen-container">
-            <div v-if="connecting" class="screen-placeholder">
+            <div v-if="connecting || loading" class="screen-placeholder">
               <el-icon size="48" color="#409EFF">
                 <Monitor />
               </el-icon>
               <p>正在连接设备...</p>
             </div>
-            
+
             <div v-else-if="!isConnected" class="screen-placeholder">
               <el-icon size="48" color="#F56C6C">
                 <Monitor />
@@ -255,7 +255,6 @@
                 <span class="log-time">{{ formatTime(log.timestamp) }}</span>
               </div>
               <div class="log-details">
-                <!-- 如果有元素信息，显示元素详情 -->
                 <div v-if="log.element" class="element-info">
                   <!-- 文本信息单独一行 -->
                   <div v-if="log.element.text" class="element-text-row">
@@ -283,7 +282,7 @@
                     <span v-if="log.element.enabled === 'false'" class="disabled">禁用</span>
                   </div>
                 </div>
-                <!-- 如果没有元素信息，只显示坐标或按键 -->
+                <!-- 无元素信息时只显示坐标或按键 -->
                 <div v-else class="action-info">
                   <span v-if="log.coordinates" class="coordinates" @click="copyToClipboard(log.coordinates, '坐标')">
                     <span class="property-label">坐标:</span>{{ log.coordinates }}
@@ -309,12 +308,13 @@ import { Monitor, Camera, HomeFilled, Document, Sunny, Search, InfoFilled, Delet
 import { deviceApi } from '@/api/device.js'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
+import { useIdleRelease } from '@/composables/useIdleRelease'
 import JMuxer from 'jmuxer'
 import pako from 'pako'
 import { ScrcpyController, Action } from '@/utils/device'
 import config from '@/config/index.js'
 
-// 生成会话令牌（内存态，绝不放进 URL）
+// 生成会话令牌
 const genSessionId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID()
@@ -340,9 +340,7 @@ export default {
     const userStore = useUserStore()
     const deviceSessionStore = useDeviceSessionStore()
 
-    // 本页会话令牌：优先沿用列表页占用时生成的 sessionId（同标签导航）；
-    // 复制标签/直接输 URL 时 store 为空，则在 onMounted 时自行占用并生成新的令牌。
-    // sessionId 仅存于内存，绝不写入 URL。
+    // 本页会话令牌：优先沿用列表页占用时的 sessionId，否则 onMounted 时自行占用
     let sessionId = deviceSessionStore.getSession(route.params.id)
 
     // 设备占用心跳
@@ -397,10 +395,9 @@ export default {
     let scrcpyWs = null  // 投屏WebSocket
     let controlWs = null // 控制WebSocket
     let inspectorWs = null // 元素检查器WebSocket
-    let reconnectTimer = null
     let jmu = null
     
-    // scrcpy 设备控制器（协议构造 + WebSocket 发送）
+    // scrcpy 设备控制器
     const scrcpy = new ScrcpyController()
     
     // 元素检查器相关状态
@@ -415,17 +412,29 @@ export default {
     
     // 获取连接信息
     const getConnectionInfo = async () => {
-      loading.value = true
       try {
         const response = await deviceApi.getDeviceConnection(route.params.id)
-        if (response.code === 0) {
+        // 代理未起时 data 可能为 null，静默等待轮询
+        if (response.code === 0 && response.data) {
           const { id: _connId, ...connData } = response.data // eslint-disable-line no-unused-vars
           Object.assign(connectionInfo, connData)
-        } else {
-          ElMessage.error(response.msg || '获取连接信息失败')
         }
       } catch (error) {
-        ElMessage.error('获取连接信息失败')
+        // 轮询期间静默
+      }
+      return !!(connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial)
+    }
+
+    // 有界轮询等待代理就绪
+    const waitForConnectionReady = async (timeoutMs = 40000, intervalMs = 1500) => {
+      loading.value = true
+      const start = Date.now()
+      try {
+        while (Date.now() - start < timeoutMs) {
+          if (await getConnectionInfo()) return true
+          await new Promise(r => setTimeout(r, intervalMs))
+        }
+        return await getConnectionInfo()
       } finally {
         loading.value = false
       }
@@ -440,6 +449,46 @@ export default {
     }
 
     // 释放设备
+    // 静默释放：调后端释放 + 断连清理，供手动释放与空闲释放复用
+    const teardownAndRelease = async () => {
+      const res = await deviceApi.deviceHold({
+        id: connectionInfo.id,
+        holder: null,
+        sessionId
+      })
+      if (res.code !== 0) {
+        ElMessage.error('设备释放失败')
+        return false
+      }
+      deviceSessionStore.clearSession(route.params.id)
+      // 关连接、停心跳、清定时器与各状态
+      disconnectWebSocket()
+      stopHoldHeartbeat()
+      if (resizeTimer) {
+        clearTimeout(resizeTimer)
+        resizeTimer = null
+      }
+      if (window.elementHoverTimer) {
+        clearTimeout(window.elementHoverTimer)
+        window.elementHoverTimer = null
+      }
+      stopXmlChangeDetection()
+      if (jmu) {
+        jmu.destroy()
+        jmu = null
+      }
+      isConnected.value = false
+      connecting.value = false
+      wsStatus.value = 'disconnected'
+      elementInspectorEnabled.value = false
+      selectedElement.value = null
+      hoverElement.value = null
+      uiHierarchy.value = null
+      operationLogs.value = []
+      lastXmlHash.value = ''
+      return true
+    }
+
     const releaseDevice = async () => {
       try {
         await ElMessageBox.confirm('确定要释放此设备吗？', '提示', {
@@ -450,76 +499,23 @@ export default {
       } catch {
         return // 用户取消
       }
-      const res = await deviceApi.deviceHold({
-        id: connectionInfo.id,
-        holder: null,
-        sessionId
-      })
-      if (res.code !== 0) {
-        ElMessage.error('设备释放失败')
-      }else {
-        deviceSessionStore.clearSession(route.params.id)
-        try {
-          // 1. 主动关闭所有WebSocket连接
-          disconnectWebSocket()
-          
-          // 2. 清理所有定时器
-          if (reconnectTimer) {
-            clearTimeout(reconnectTimer)
-            reconnectTimer = null
-          }
-          
-          if (resizeTimer) {
-            clearTimeout(resizeTimer)
-            resizeTimer = null
-          }
-          
-          // 清理hover定时器
-          if (window.elementHoverTimer) {
-            clearTimeout(window.elementHoverTimer)
-            window.elementHoverTimer = null
-          }
-          
-          // 3. 停止XML变化检测
-          stopXmlChangeDetection()
-          
-          // 4. 清理视频播放器
-          if (jmu) {
-            jmu.destroy()
-            jmu = null
-          }
-          
-          // 5. 重置连接状态
-          isConnected.value = false
-          connecting.value = false
-          wsStatus.value = 'disconnected'
-          
-          // 6. 清理元素检查器状态
-          elementInspectorEnabled.value = false
-          selectedElement.value = null
-          hoverElement.value = null
-          uiHierarchy.value = null
-          operationLogs.value = []
-          lastXmlHash.value = ''
-          
-          // 7. 跳转到设备列表页面
-          router.push({
-            name: 'Devices'
-          })
-        } catch (error) {
-          console.error('设备释放过程中出现错误:', error)
-          ElMessage.error('设备释放失败: ' + error.message)
+      try {
+        if (await teardownAndRelease()) {
+          router.push({ name: 'Devices' })
         }
+      } catch (error) {
+        console.error('设备释放过程中出现错误:', error)
+        ElMessage.error('设备释放失败: ' + error.message)
       }
     }
-    
-    // 断开设备连接
-    const disconnectDevice = () => {
-      if (isConnected.value) {
-        disconnectWebSocket()
-      }
-    }
-    
+
+    // 长时间切走页面则自动释放并在回到页面时提示
+    useIdleRelease({
+      isActive: () => isConnected.value,
+      release: teardownAndRelease,
+      onReleased: () => router.push({ name: 'Devices' })
+    })
+
     // 连接WebSocket
     const connectWebSocket = () => {
       if (!connectionInfo.proxyHost || !connectionInfo.proxyPort || !connectionInfo.serial) {
@@ -539,7 +535,7 @@ export default {
         connectInspectorWebSocket()
       }
     }
-    
+
     // 连接投屏WebSocket
     const connectScrcpyWebSocket = () => {
       try {
@@ -548,14 +544,14 @@ export default {
         scrcpyWs = new WebSocket(wsUrl)
         scrcpyWs.binaryType = 'arraybuffer'
         scrcpy.bind(scrcpyWs)
-        
+
         scrcpyWs.onopen = () => {
           wsStatus.value = 'connected'
           isConnected.value = true
           connecting.value = false
           ElMessage.success('投屏连接成功')
-          
-          // 使用nextTick确保DOM渲染完成，然后初始化JMuxer
+
+          // 初始化JMuxer
           nextTick(() => {
             initMirrorDisplay()
           })
@@ -731,6 +727,11 @@ export default {
           break
         case 'stream_stopped':
           break
+        case 'device_disconnected':
+          // 设备被拔出/释放：立即反映到页面
+          ElMessage.warning('设备已断开连接')
+          isConnected.value = false
+          break
         case 'error':
           ElMessage.error(`错误: ${message.message}`)
           break
@@ -854,26 +855,6 @@ export default {
             ElMessage.error('UI层次结构获取失败：' + (message.error || '未知错误'))
           }
           break
-        case 'click_result':
-          if (!message.success) {
-            ElMessage.error(`点击失败: ${message.error}`)
-          }
-          break
-        case 'long_click_result':
-          if (!message.success) {
-            ElMessage.error(`长按失败: ${message.error}`)
-          }
-          break
-        case 'swipe_result':
-          if (!message.success) {
-            ElMessage.error(`滑动失败: ${message.error}`)
-          }
-          break
-        case 'key_event_result':
-          if (!message.success) {
-            ElMessage.error(`按键失败: ${message.error}`)
-          }
-          break
         case 'xml_only':
           // 处理仅XML内容的响应（用于页面变化检测）
           if (message.success && message.data && message.data.xml) {
@@ -959,6 +940,9 @@ export default {
           videoResolution.width = newWidth
           videoResolution.height = newHeight
           videoResolution.aspectRatio = newWidth / newHeight
+          if (scrcpy) {
+            scrcpy.setResolution(newWidth, newHeight)
+          }
           nextTick(() => adjustScreenContainer())
         }
       }
@@ -1050,12 +1034,12 @@ export default {
       }
     }
     
-    // 将显示坐标转换为scrcpy设备坐标（用于scrcpy控制协议）
+    // 将显示坐标转换为scrcpy设备坐标
     const toDeviceCoords = (coords) => {
       return scrcpy.toDeviceCoords(coords.relativeX, coords.relativeY, coords.displayWidth, coords.displayHeight)
     }
-    
-    // 将显示坐标转换为原始设备坐标（用于元素检查器匹配，bounds是原始分辨率）
+
+    // 将显示坐标转换为原始设备坐标（用于元素检查器匹配）
     const toOriginalDeviceCoords = (coords) => {
       if (!deviceWindowSize.width || !deviceWindowSize.height) return null
       const scaleX = deviceWindowSize.width / coords.displayWidth
@@ -1075,7 +1059,7 @@ export default {
       else if (action === Action.UP) scrcpy.touchUp(dc.x, dc.y)
     }
     
-    // 处理屏幕点击（仅用于元素检查器日志记录，实际触控已在mouseDown/Up中通过scrcpy完成）
+    // 处理屏幕点击（元素检查器日志记录）
     const handleScreenClick = (event) => {
       if (!isConnected.value) return
       
@@ -1122,7 +1106,7 @@ export default {
       touchAction = null
     }
     
-    // 记录滑动操作日志（滑动本身已通过实时touch事件完成）
+    // 记录滑动操作日志
     const logSwipeEvent = (startCoords, endCoords) => {
       if (!elementInspectorEnabled.value) return
       const startOc = toOriginalDeviceCoords(startCoords)
@@ -1167,7 +1151,7 @@ export default {
     // 处理鼠标/触摸移动 - 拖拽时实时发送ACTION_MOVE
     const handleScreenMouseMove = (event) => {
 
-      // 如果启用了元素检查器且没有按下鼠标，进行元素查找（使用原始分辨率坐标）
+      // 未按下且启用元素检查器时进行元素查找
       if (!isMouseDown && elementInspectorEnabled.value && !connecting.value) {
         const coords = getTouchCoordinates(event)
 
@@ -1221,7 +1205,7 @@ export default {
       
       isMouseDown = false
       
-      // 发送ACTION_UP（无论是点击还是滑动，都需要抬起手指）
+      // 发送ACTION_UP
       if (coords) {
         sendScrcpyTouch(Action.UP, coords)
       } else if (startCoords) {
@@ -1306,14 +1290,6 @@ export default {
       sendControlMessage({
         type: 'dump_hierarchy'
       })
-    }
-    
-    // 获取WebSocket URL
-    const getWebSocketUrl = () => {
-      if (connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
-        return `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/ws`
-      }
-      return '-'
     }
     
     // 获取调试命令
@@ -1426,10 +1402,10 @@ export default {
       }
     }
 
-    // 检查点是否在bounds内 - 优化版本
+    // 检查点是否在bounds内
     const isPointInBounds = (x, y, bounds) => {
       if (!bounds) return false
-      // 使用更严格的边界检测，避免边界重叠问题
+      // 严格边界检测
       return x > bounds.left && x < bounds.right && y > bounds.top && y < bounds.bottom
     }
 
@@ -1439,7 +1415,7 @@ export default {
       return (bounds.right - bounds.left) * (bounds.bottom - bounds.top)
     }
 
-    // 收集所有匹配的元素 - 优化版本
+    // 收集所有匹配的元素
     const collectAllMatchingElements = (node, x, y, matches = []) => {
       if (!node) {
         return matches
@@ -1451,12 +1427,11 @@ export default {
       }
       
       if (isPointInBounds(x, y, bounds)) {
-        // 计算点到边界中心的距离，用于精度判断
+        // 点到边界中心的距离
         const centerX = (bounds.left + bounds.right) / 2
         const centerY = (bounds.top + bounds.bottom) / 2
         const distanceToCenter = Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2))
-        
-        // 当前节点匹配，添加到结果中
+
         matches.push({
           element: node,
           bounds: bounds,
@@ -1478,7 +1453,7 @@ export default {
       return matches
     }
 
-    // 递归查找最精确匹配元素 - 优化版本
+    // 递归查找最精确匹配元素
     const findSmallestElementAt = (node, x, y) => {
       // 收集所有匹配的元素
       const allMatches = collectAllMatchingElements(node, x, y)
@@ -1505,13 +1480,13 @@ export default {
         const maxArea = Math.max(...allMatches.map(m => m.area))
         score += (maxArea - area) / maxArea * 1000
         
-        // 新增：点击位置越接近元素中心，分数越高
+        // 越接近元素中心分数越高
         const maxDistance = Math.max(...allMatches.map(m => m.distanceToCenter))
         if (maxDistance > 0) {
           score += (maxDistance - distanceToCenter) / maxDistance * 200
         }
-        
-        // 新增：点击位置在元素中心区域的加分
+
+        // 点击位置在元素中心区域的加分
         if (relativeX >= 0.2 && relativeX <= 0.8 && relativeY >= 0.2 && relativeY <= 0.8) {
           score += 150 // 在中心80%区域内
         }
@@ -1602,9 +1577,7 @@ export default {
       }
       
       if (foundElement) {
-        // 找到匹配的元素
-        
-        // 更新hover状态（仅更新属性显示，不记录日志）
+        // 更新hover状态
         hoverElement.value = foundElement
         isHovering.value = true
         return foundElement
@@ -1638,7 +1611,6 @@ export default {
       inspectorWs.send(JSON.stringify(message))
     }
     
-    // 处理树节点点击
     // 记录操作日志
     const addOperationLog = (action, logData) => {
       if (!elementInspectorEnabled.value) return
@@ -1738,7 +1710,7 @@ export default {
       return hash.toString()
     }
 
-    // 获取当前XML并检测变化 - 优化版本
+    // 获取当前XML并检测变化
     const checkXmlChange = async () => {
       // 先检查连接状态
       if (!monitorWebSocketConnection()) {
@@ -1761,7 +1733,7 @@ export default {
       }
     }
 
-    // 页面稳定性检测状态 - 优化版本
+    // 页面稳定性检测状态
     let stabilityCheckTimer = null
     let stabilityCheckCount = 0
     let lastStabilityHash = null
@@ -1771,7 +1743,7 @@ export default {
     const MAX_XML_RETRY = 3 // 最大重试次数
     const REQUIRED_STABLE_COUNT = 2 // 需要连续稳定的次数
     
-    // 等待页面稳定的XML检测 - 优化版本（基准XML存储在web端）
+    // 等待页面稳定的XML检测（基准XML存储在web端）
     const waitForPageStability = (initialDelay = 1000) => {
       // 清除之前的稳定性检测
       if (stabilityCheckTimer) {
@@ -1824,7 +1796,7 @@ export default {
       }
     }
     
-    // 检测页面是否稳定 - 优化版本
+    // 检测页面是否稳定
     const checkPageStability = () => {
       if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
         console.error('WebSocket连接异常，停止稳定性检测')
@@ -1885,7 +1857,7 @@ export default {
       }
     }
     
-    // 处理稳定性检测的XML响应 - 优化版本（基准XML存储在web端）
+    // 处理稳定性检测的XML响应（基准XML存储在web端）
     const handleStabilityXmlResponse = (xmlContent) => {
       const currentHash = generateXmlHash(xmlContent)
       
@@ -1904,8 +1876,6 @@ export default {
         
         // 需要连续稳定多次才认为真正稳定
         if (consecutiveStableCount >= REQUIRED_STABLE_COUNT) {
-          // 页面真正稳定
-          
           // 停止稳定性检测
           if (stabilityCheckTimer) {
             clearTimeout(stabilityCheckTimer)
@@ -1925,7 +1895,7 @@ export default {
           
           return true // 页面已稳定
         } else {
-          // 还需要继续确认稳定性
+          // 继续确认稳定性
           return false // 继续检测
         }
       } else {
@@ -1937,26 +1907,24 @@ export default {
       }
     }
 
-    // 智能XML变化检测 - 只在需要时检测
+    // 智能XML变化检测
     const scheduleXmlCheck = (delay = 1000) => {
       // 清除之前的定时器
       if (xmlChangeTimer) {
         clearTimeout(xmlChangeTimer)
       }
-      
-      // 使用页面稳定性检测替代简单的延迟检测
+
       waitForPageStability(delay)
     }
 
-    // 开始XML变化检测 - 优化兜底检测频率
+    // 开始XML变化检测
     const startXmlChangeDetection = () => {
       if (!elementInspectorEnabled.value) return
-      
-      // 提高兜底检测频率到5秒，确保不错过页面变化
+
       xmlChangeTimer = setInterval(() => {
         checkXmlChange()
-        
-        // 额外的强制刷新机制：如果UI层次为空且连接正常，强制刷新
+
+        // UI层次为空但连接正常时强制刷新
         if (!uiHierarchy.value && monitorWebSocketConnection()) {
           console.warn('检测到UI层次为空但连接正常，强制刷新')
           refreshUIHierarchy()
@@ -1989,9 +1957,9 @@ export default {
     // WebSocket连接状态监控
     const monitorWebSocketConnection = () => {
       if (!inspectorWs) return false
-      
-      const isConnected = inspectorWs.readyState === WebSocket.OPEN
-      if (!isConnected) {
+
+      const socketConnected = inspectorWs.readyState === WebSocket.OPEN
+      if (!socketConnected) {
         console.warn('WebSocket连接异常，状态:', inspectorWs.readyState)
         // 尝试重新连接
         if (elementInspectorEnabled.value) {
@@ -2000,11 +1968,9 @@ export default {
           }, 3000) // 3秒后重连
         }
       }
-      return isConnected
+      return socketConnected
     }
-    
-    // 获取节点显示名称
-    
+
     // 判断是否为输入元素
     const isInputElement = (element) => {
       if (!element) return false
@@ -2077,8 +2043,7 @@ export default {
       }
     }
 
-    // 确保本页持有设备占用：继承自列表页则直接沿用；否则自行原子占用。
-    // 占用失败说明设备已被其他会话/页面占用 -> 返回 false，由 onMounted 拒绝投屏。
+    // 确保本页持有设备占用：继承自列表页则沿用，否则自行原子占用
     const ensureHold = async () => {
       if (sessionId) return true // 列表页已占用并传入会话
 
@@ -2090,7 +2055,7 @@ export default {
 
       const newSession = genSessionId()
       try {
-        const res = await deviceApi.deviceHold({ id: route.params.id, holder, sessionId: newSession })
+        const res = await deviceApi.deviceHold({ id: route.params.id, holder, sessionId: newSession, cast: true })
         if (!res || res.code !== 0) return false
       } catch (e) {
         return false
@@ -2101,7 +2066,7 @@ export default {
       return true
     }
 
-    // 页面关闭/刷新时以 keepalive 方式释放占用（onUnmounted 在这些场景不可靠）
+    // 页面关闭/刷新时以 keepalive 方式释放占用
     const handlePageHide = () => {
       if (sessionId) {
         deviceApi.releaseHoldOnUnload({
@@ -2114,10 +2079,9 @@ export default {
 
     // 组件挂载
     onMounted(async () => {
-      // 先确认占用再投屏：同一设备只允许一个用户占用、只能在一个页面投屏
+      // 先确认占用再投屏
       const ok = await ensureHold()
       if (!ok) {
-        wsStatus.value = 'occupied_by_other'
         try {
           await ElMessageBox.alert('该设备正在被占用/使用中，无法投屏', '设备使用中', {
             confirmButtonText: '返回设备列表',
@@ -2128,18 +2092,26 @@ export default {
         return
       }
 
-      // 自动获取连接信息并连接设备
-      await getConnectionInfo()
-
-      // 如果连接信息获取成功，自动连接设备
-      if (connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
-        connectDevice()
-      }
-
-      // 启动设备占用心跳
+      // 启动占用心跳续约
       if (connectionInfo.serial) {
         startHoldHeartbeat()
       }
+
+      // 等待 agent 启动代理并上报连接信息
+      const ready = await waitForConnectionReady()
+      if (!ready) {
+        ElMessage.error('设备代理启动超时，请重试')
+        stopHoldHeartbeat()
+        if (sessionId) {
+          deviceApi.deviceHold({ id: route.params.id, holder: null, sessionId }).catch(() => {})
+          deviceSessionStore.clearSession(route.params.id)
+        }
+        router.push({ name: 'Devices' })
+        return
+      }
+
+      // 连接信息就绪，自动连接并投屏
+      connectDevice()
 
       // 页面关闭/刷新时释放占用
       window.addEventListener('pagehide', handlePageHide)
@@ -2149,19 +2121,17 @@ export default {
     })
 
     onUnmounted(() => {
+      // 关闭可能仍打开的消息弹窗
+      ElMessageBox.close()
       disconnectWebSocket()
       stopHoldHeartbeat()
-      // 仅释放本会话持有的占用（后端按 sessionId 校验），不会误删其它页面的占用
+      // 仅释放本会话持有的占用
       if (sessionId) {
         deviceApi.deviceHold({ id: connectionInfo.id, holder: null, sessionId }).catch(() => {})
         deviceSessionStore.clearSession(route.params.id)
       }
 
       // 清理所有定时器
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer)
-      }
-
       if (resizeTimer) {
         clearTimeout(resizeTimer)
       }
@@ -2201,7 +2171,6 @@ export default {
       deviceWindowSize,
       getConnectionInfo,
       connectDevice,
-      disconnectDevice,
       handleVideoMetadata,
       adjustScreenContainer,
       handleScreenClick,
@@ -2217,7 +2186,6 @@ export default {
       handleWakeScreen,
       handleScreenshot,
       handleDumpXml,
-      getWebSocketUrl,
       getDebugCommand,
       copyCommand,
       copyConnectionCommand,
@@ -2460,15 +2428,6 @@ export default {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-}
-
-/* 元素属性面板文本换行 */
-.info-card .el-descriptions-item__content {
-  word-break: break-all;
-  word-wrap: break-word;
-  max-width: 100%;
-  overflow-wrap: break-word;
-  min-width: 0; /* 允许内容收缩 */
 }
 
 /* 元素属性面板文本换行 */
@@ -2723,24 +2682,6 @@ export default {
   padding: 1px 3px;
   border-radius: 2px;
   font-size: 10px;
-}
-
-.key-info {
-  color: #606266;
-  font-family: monospace;
-  font-size: 11px;
-  cursor: pointer;
-  padding: 1px 2px;
-  border-radius: 2px;
-  transition: background-color 0.2s;
-  word-break: break-all;
-  word-wrap: break-word;
-  max-width: 100%;
-  display: inline-block;
-}
-
-.key-info:hover {
-  background: #f4f4f5;
 }
 
 .element-bounds {

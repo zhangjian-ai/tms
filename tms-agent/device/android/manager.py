@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import adbutils
 
@@ -21,8 +22,11 @@ class DeviceState:
     """设备状态信息"""
     serial: str
     online: bool = False
-    init: bool = False
+    init: bool = False  # 接入工具（uiautomator apk）是否已安装
     t2u: Tcp2Usb = None
+    occupied: bool = False  # 是否已被占用
+    cast: bool = False      # 占用是否允许投屏（web=True，自动化=False）
+    info_reported: bool = False  # device_info 是否已上报
     last_seen: datetime = field(default_factory=datetime.now)
     error: str = ""
 
@@ -32,12 +36,12 @@ class AndroidDeviceManager:
 
     def __init__(self):
         self.config = settings["android"]
-        # 配置里的 host 用于上报（0.0.0.0 时替换为 LAN IP）；客户端连接一律用 127.0.0.1
+        # host 用于上报（0.0.0.0 时替换为 LAN IP）；客户端连接一律用 127.0.0.1
         self.report_host = self.config["adb"].get("host", "0.0.0.0")
         self.port = self.config["adb"].get("port", 5538)
         self.host = "127.0.0.1"
 
-        # 统一 adb 客户端目标地址与版本变量，避免多版本客户端触发 server 重启
+        # 统一 adb 客户端目标地址与端口
         os.environ["ANDROID_ADB_SERVER_HOST"] = self.host
         os.environ["ANDROID_ADB_SERVER_PORT"] = str(self.port)
         os.environ["ADB_SERVER_HOST"] = self.host
@@ -48,47 +52,63 @@ class AndroidDeviceManager:
 
         self.devices: Dict[str, DeviceState] = {}
         self.installer = AndroidDeviceInstaller()
-        self.ws: websocket.WebSocketClientConnection = ...
+        self.ws: websocket.WebSocketClientConnection = None
+        self._locks: Dict[str, asyncio.Lock] = {}  # 每设备串行化 start/stop_proxy
+
+    def _lock_for(self, serial: str) -> asyncio.Lock:
+        lock = self._locks.get(serial)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[serial] = lock
+        return lock
 
     async def _ensure_ws(self):
         """确保后端 WS 已连接"""
-        if not self.ws or isinstance(self.ws, Ellipsis.__class__):
+        if not self.ws:
             self.ws = await ws_client.connect()
         return self.ws
 
     async def sync(self):
-        """同步设备状态到服务端（3秒轮询 adb 实时设备列表为权威状态，与 iOS 一致）"""
+        """同步设备状态到服务端（3秒轮询 adb 实时设备列表）。
+
+        懒代理：发现设备只上报存在，不启动任何代理；代理由 backend 下发 start_proxy 才启动。
+        """
         while True:
             await asyncio.sleep(3)
             try:
                 await self._ensure_ws()
+                if not self.ws:
+                    continue
 
-                # 以 adb 实时设备列表为准（adb 异常时不误判下线）
+                # 以 adb 实时设备列表为准，仅取 state=="device" 的正常设备
                 try:
-                    current = {d.serial for d in self.adb.device_list()}
+                    current = {d.serial for d in self.adb.list() if d.state == "device"}
                 except Exception as e:
                     logger.warning(f"获取 adb 设备列表失败: {e}")
                     continue
 
-                # 上线：标记在线，未完成初始化的设备执行初始化
+                # 上线：标记在线并上报 online 与（首次）device_info
                 for serial in current:
-                    if serial not in self.devices:
-                        self.devices[serial] = DeviceState(serial=serial, online=True)
-                    self.devices[serial].online = True
-                    self.devices[serial].last_seen = datetime.now()
-                    if not self.devices[serial].init or not self.devices[serial].t2u:
-                        await self._on_online(serial)
+                    device = self.devices.get(serial)
+                    if device is None:
+                        logger.info(f"发现新设备: {serial}")
+                        device = DeviceState(serial=serial, online=True)
+                        self.devices[serial] = device
+                    device.online = True
+                    device.last_seen = datetime.now()
 
-                # 标记不在实时列表中的设备为离线
+                    await self.ws.write_message({"type": "status", "serial": serial, "status": "online"})
+
+                    # 首次上报 device_info 供列表展示
+                    if not device.info_reported:
+                        info = await asyncio.to_thread(self.get_device_info, self.adb.device(serial))
+                        if info:
+                            await self.ws.write_message({"type": "device_info", "serial": serial, "device_info": info})
+                            device.info_reported = True
+
+                # 离线：清理代理、上报 offline，成功后移除
                 for serial, device in list(self.devices.items()):
                     if serial not in current:
-                        device.online = False
-
-                # 上报状态：在线发 online；离线则清理资源、发 offline、成功后移除
-                for serial, device in list(self.devices.items()):
-                    if device.online:
-                        await self.ws.write_message({"type": "status", "serial": serial, "status": "online"})
-                    else:
                         await self._on_offline(serial)
                         await self.ws.write_message({"type": "status", "serial": serial, "status": "offline"})
                         self.devices.pop(serial, None)
@@ -98,52 +118,113 @@ class AndroidDeviceManager:
                 if "websocket" in str(e).lower():
                     self.ws = None
 
-    async def _on_online(self, serial: str):
-        """设备上线：安装接入工具、启动 Tcp2Usb 代理并上报"""
+    async def command_loop(self):
+        """接收 backend 反向下发的指令（start_proxy / stop_proxy）。
+
+        与 sync() 共用 self.ws：sync 只写、本循环只读。指令处理放到独立 task。
+        """
+        while True:
+            ws = self.ws
+            if not ws:
+                await asyncio.sleep(1)
+                continue
+            try:
+                msg = await ws.read_message()
+            except Exception as e:
+                logger.warning(f"读取后端指令失败: {e}")
+                if self.ws is ws:
+                    self.ws = None
+                await asyncio.sleep(1)
+                continue
+            if msg is None:  # 连接已关闭
+                if self.ws is ws:
+                    self.ws = None
+                await asyncio.sleep(1)
+                continue
+            await self._handle_command(msg)
+
+    async def _handle_command(self, msg):
         try:
-            if serial not in self.devices:
-                logger.info(f"发现新设备: {serial}")
-                self.devices[serial] = DeviceState(serial=serial, online=True)
-            device = self.devices[serial]
-            device.online = True
-            device.last_seen = datetime.now()
+            data = json.loads(msg) if isinstance(msg, (str, bytes)) else msg
+        except Exception:
+            logger.warning(f"无法解析后端指令: {msg}")
+            return
+        mtype = data.get("type")
+        serial = data.get("serial")
+        if not serial:
+            return
+        if mtype == "start_proxy":
+            asyncio.create_task(self.start_proxy(serial, bool(data.get("cast", False))))
+        elif mtype == "stop_proxy":
+            asyncio.create_task(self.stop_proxy(serial))
 
-            await self._ensure_ws()
-            await self.ws.write_message({"type": "status", "serial": serial, "status": "online"})
+    async def start_proxy(self, serial: str, cast: bool = False):
+        """占用时启动设备代理：安装接入工具 + 启动 Tcp2Usb 并上报连接信息。幂等。"""
+        async with self._lock_for(serial):
+            device = self.devices.get(serial)
+            if device is None or not device.online:
+                logger.warning(f"启动代理失败：设备不在线 {serial}")
+                return
+            try:
+                await self._ensure_ws()
 
-            # 安装 apk + 取设备信息为阻塞调用，放线程池避免卡住事件循环/事件流
-            if not device.init:
-                if await asyncio.to_thread(self.installer.install_to_device, serial):
-                    device.init = True
-                    info = await asyncio.to_thread(self.get_device_info, self.adb.device(serial))
-                    if info:
-                        await self.ws.write_message({"type": "device_info", "serial": serial, "device_info": info})
+                # 安装接入工具
+                if not device.init:
+                    if await asyncio.to_thread(self.installer.install_to_device, serial):
+                        device.init = True
+                    else:
+                        logger.error(f"接入工具安装失败（adb 仍可用）: {serial}")
 
-            if not device.t2u:
-                t2u = Tcp2Usb(serial, self.host, self.port)
-                t2u.start()
-                device.t2u = t2u
+                # 启动 Tcp2Usb 代理
+                if not device.t2u:
+                    t2u = Tcp2Usb(serial, self.host, self.port)
+                    t2u.start()
+                    device.t2u = t2u
+
+                device.occupied = True
+                device.cast = cast
+
                 await self.ws.write_message({
                     "type": "connection_info", "serial": serial,
                     "connection_info": self.get_connection_info(device)
                 })
-        except Exception as e:
-            logger.error(f"设备上线处理失败 {serial}: {e}")
+                logger.info(f"设备 {serial} 代理已启动 (cast={cast})")
+            except Exception as e:
+                logger.error(f"启动代理失败 {serial}: {e}")
+
+    async def stop_proxy(self, serial: str):
+        """释放时停止设备代理：清理 scrcpy 与 Tcp2Usb。幂等。"""
+        async with self._lock_for(serial):
+            device = self.devices.get(serial)
+            if device is None:
+                return
+            try:
+                await scrcpy_manager.cleanup_device(serial, device_offline=False)
+                if device.t2u:
+                    device.t2u.stop()
+                    device.t2u = None
+            except Exception as e:
+                logger.error(f"停止代理失败 {serial}: {e}")
+            device.occupied = False
+            device.cast = False
+            logger.info(f"设备 {serial} 代理已停止")
 
     async def _on_offline(self, serial: str):
         """设备下线：标记离线并清理 scrcpy / Tcp2Usb 资源。
 
-        offline 上报与从字典移除交由心跳循环完成，保证上报成功后才移除，避免漏报。
+        offline 上报与移除交由心跳循环完成。
         """
         device = self.devices.get(serial)
         if not device:
             return
         device.online = False
         device.init = False
+        device.occupied = False
+        device.cast = False
         try:
             await scrcpy_manager.cleanup_device(serial, device_offline=True)
             if device.t2u:
-                device.t2u.stop()  # 线程安全停止（在其自身事件循环里关闭 server）
+                device.t2u.stop()
                 device.t2u = None
         except Exception as e:
             logger.error(f"设备下线清理失败 {serial}: {e}")

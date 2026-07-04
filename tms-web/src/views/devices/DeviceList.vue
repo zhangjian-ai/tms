@@ -142,7 +142,7 @@ import { useUserStore } from '@/stores/user.js'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import DefaultPagination from '@/components/Pagination.vue'
 
-// 生成会话令牌（内存态，绝不放进 URL）
+// 生成会话令牌
 const genSessionId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID()
@@ -181,7 +181,7 @@ export default {
       total: 0
     })
 
-    // 获取设备列表；silent=true 时用于轮询，不触发 loading 遮罩，避免闪烁
+    // 获取设备列表；silent=true 用于轮询，不触发 loading 遮罩
     const getDeviceList = async (silent = false) => {
       if (!silent) loading.value = true
       try {
@@ -219,10 +219,8 @@ export default {
     // 分页改变事件统一处理
     const handlePaginationChange = (event) => {
       if (event.type === 'size') {
-        // 改变每页数量时重置到第一页
         pagination.pageNo = 1
       }
-      // 刷新数据（页码已通过双向绑定自动更新）
       getDeviceList()
     }
 
@@ -244,7 +242,7 @@ export default {
         return
       }
 
-      // 点击时以后端原子占用作为“实时校验”，不信任列表中可能已陈旧的行状态
+      // 后端原子占用作为实时校验
       const holder = userStore.userInfo?.username || ''
       if (!holder) {
         ElMessage.error('未获取到登录用户信息，无法占用设备')
@@ -257,7 +255,8 @@ export default {
         res = await deviceApi.deviceHold({
           id: row.id,
           holder,
-          sessionId
+          sessionId,
+          cast: true
         })
       } catch (e) {
         ElMessage.error('设备占用失败')
@@ -271,7 +270,7 @@ export default {
         return
       }
 
-      // 占用成功：把 sessionId 交给详情页（同标签导航）
+      // 占用成功：把 sessionId 交给详情页
       deviceSessionStore.setSession(row.id, sessionId)
       try {
         router.push({
@@ -318,7 +317,7 @@ export default {
       }
     }
 
-    // 组件挂载时获取数据，并启动定时轮询以自动同步在线/离线/被占用状态
+    // 挂载时获取数据并启动轮询同步设备状态
     onMounted(() => {
       getDeviceList()
       pollTimer = setInterval(() => getDeviceList(true), 4000)

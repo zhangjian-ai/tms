@@ -21,4 +21,7 @@ public class DeviceHoldDTO {
 
     @ApiModelProperty("会话令牌：标识发起占用/释放的具体页面，用于按会话校验所有权")
     private String sessionId;
+
+    @ApiModelProperty("占用时是否启动投屏：web 占用为 true，自动化脚本占用为 false（仅起代理）")
+    private boolean cast;
 }
