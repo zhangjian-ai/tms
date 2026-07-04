@@ -69,6 +69,8 @@ venv/
 ### Agent local config ###
 tms-agent/settings.yml
 selfIdentity.plist
+tms-agent/bin/darwin/*
+tms-agent/bin/linux/*
 
 ### Binary / third-party tools ###
 tms-agent/device/android/tools/static/scrcpy-server
