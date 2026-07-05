@@ -1,0 +1,36 @@
+server:
+  host: 127.0.0.1  # 管理后端的地址
+  port: 8888
+  uri: /api/ws/device/sync
+
+android:
+  adb:
+    host: 0.0.0.0   # 上报给后端时若为 0.0.0.0 会自动替换为本机 LAN IP
+    port: 5538
+    bin:            # 留空使用项目自带 bin/<platform>/adb；填绝对路径可覆盖
+
+  proxy:
+    host: 0.0.0.0
+    port: 8000
+    debug: true
+
+ios:
+  # WDA 会话级设置（可选，均有代码默认值；按现场网络微调）
+  wda:
+    go_ios_bin:           # 留空使用项目自带 bin/<platform>/ios；填绝对路径可覆盖
+    auto_tunnel: true     # 是否由 agent 自动起 RSD 隧道（iOS 17+ 需 root）；外部常驻时设 false
+    wda_bundle_id: com.xxxxx.WebDriverAgentRunner.xctrunner    # xcode为ios设备安装wda时指定的
+    sudo_password:        # 非 root 运行时用于 sudo 起隧道的管理员密码（明文，注意文件权限；更安全可配置免密 sudo）
+    wda_ready_timeout: 30   # 等待设备上 WDA 就绪的最长秒数（冷启动较慢，勿设太小）
+
+    wait_for_idle_timeout: 0        # 关闭每次操作前的 idle 等待（控制提速主开关）
+    animation_cool_off_timeout: 0
+    mjpeg_scaling_factor: 50         # MJPEG 帧缩放百分比，50=缩到一半 → 带宽约 1/4
+    mjpeg_server_framerate: 20
+    mjpeg_server_quality: 40         # MJPEG JPEG 质量 0-100
+
+  proxy:
+    host: 0.0.0.0
+    port: 8001
+    debug: true
+    mjpeg_quality: 0    # 0=透传设备原始帧(省CPU)；1-95 才重编码

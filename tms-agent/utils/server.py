@@ -37,7 +37,6 @@ class WSClient:
 
         except Exception as e:
             logger.error(f"WebSocket连接失败: {e}")
-            logger.error(f"服务器配置: {self.config}")
             # 返回 None 供调用方处理失败
             return None
 

@@ -31,7 +31,7 @@ bin/
 ## 重新生成
 
 ```
-bash scripts/fetch_binaries.sh
+bash bin/fetch_binaries.sh
 ```
 
 ## 是否提交到 git

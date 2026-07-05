@@ -9,7 +9,7 @@ from utils.variables import settings
 from utils.binaries import resolve as resolve_bin
 
 # go-ios 可执行文件：优先 settings.ios.go_ios_bin，否则用项目自带二进制
-GO_IOS_BIN = settings.get("ios", {}).get("go_ios_bin") or resolve_bin("ios")
+GO_IOS_BIN = settings.get("ios", {}).get("wda", {}).get("go_ios_bin") or resolve_bin("ios")
 
 
 def _is_root() -> bool:
@@ -28,7 +28,7 @@ class Idb:
         """返回 (sudo 前缀列表, 需写入 stdin 的密码字符串或 None)。"""
         if _is_root():
             return [], None
-        pw = settings.get("ios", {}).get("sudo_password")
+        pw = settings.get("ios", {}).get("wda", {}).get("sudo_password")
         return ["sudo", "-S", "-p", ""], (pw + "\n" if pw else "")
 
     @classmethod
@@ -143,7 +143,7 @@ class Idb:
 
     def start_tunnel(self) -> Optional[subprocess.Popen]:
         """启动 iOS 17+ 所需的 RSD 隧道守护进程（需 root）。"""
-        if not _is_root() and not settings.get("ios", {}).get("sudo_password"):
+        if not _is_root() and not settings.get("ios", {}).get("wda", {}).get("sudo_password"):
             logger.warning("未配置 ios.sudo_password 且非 root 运行，iOS 17+ 隧道及配对相关命令可能失败")
         process = self._spawn(["tunnel", "start"])
         if process:

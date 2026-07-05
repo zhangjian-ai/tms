@@ -51,7 +51,7 @@ class IOSDeviceManager:
 
         # iOS 17+ 需要常驻 RSD 隧道（需 root）
         self.tunnel_process: Optional[subprocess.Popen] = None
-        if self.config.get("auto_tunnel", True):
+        if self.config.get("wda", {}).get("auto_tunnel", True):
             self.tunnel_process = self.idb.start_tunnel()
 
     def _lock_for(self, udid: str) -> asyncio.Lock:
@@ -116,7 +116,7 @@ class IOSDeviceManager:
                 if not (device.occupied and device.online):
                     return False
 
-                bundle = self.config.get("wda_bundle_id", "com.facebook.WebDriverAgentRunner.xctrunner")
+                bundle = self.config.get("wda", {}).get("wda_bundle_id", "com.facebook.WebDriverAgentRunner.xctrunner")
                 runner = self.idb.start_wda(udid, bundle)
                 if not runner:
                     return False
@@ -305,7 +305,7 @@ class IOSDeviceManager:
 
     async def _wait_wda_ready(self, udid: str, device: IOSDeviceState) -> bool:
         """等待 WDA 在设备上真正就绪。"""
-        timeout = int(self.config.get("wda_ready_timeout", 30))
+        timeout = int(self.config.get("wda", {}).get("wda_ready_timeout", 30))
         waited = 0
         while waited < timeout:
             await asyncio.sleep(2)
@@ -333,7 +333,7 @@ class IOSDeviceManager:
             logger.warning(f"设备 {udid} WDA 未就绪（未安装或暂不可达），跳过初始化")
             return False
 
-        wda_bundle_id = self.config.get("wda_bundle_id", "com.facebook.WebDriverAgentRunner.xctrunner")
+        wda_bundle_id = self.config.get("wda", {}).get("wda_bundle_id", "com.facebook.WebDriverAgentRunner.xctrunner")
 
         # 启动 WDA + 转发 8100
         wda_runner = self.idb.start_wda(udid, wda_bundle_id)
