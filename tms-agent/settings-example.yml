@@ -9,10 +9,10 @@ android:
     port: 5538
     bin:            # 留空使用项目自带 bin/<platform>/adb；填绝对路径可覆盖
 
-  proxy:
+  proxy:  # web端与agent交互时的访问地址
     host: 0.0.0.0
     port: 8000
-    debug: true
+    debug: true  # 开发调试使用，正式部署时置为false，透传给 tornado.web.Application
 
 ios:
   # WDA 会话级设置（可选，均有代码默认值；按现场网络微调）
@@ -29,8 +29,8 @@ ios:
     mjpeg_server_framerate: 20
     mjpeg_server_quality: 40         # MJPEG JPEG 质量 0-100
 
-  proxy:
+  proxy:  # web端与agent交互时的访问地址
     host: 0.0.0.0
     port: 8001
-    debug: true
+    debug: true  # 开发调试使用，正式部署时置为false
     mjpeg_quality: 0    # 0=透传设备原始帧(省CPU)；1-95 才重编码
