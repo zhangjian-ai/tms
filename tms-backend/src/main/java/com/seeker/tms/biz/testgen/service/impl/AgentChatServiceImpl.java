@@ -3,9 +3,10 @@ package com.seeker.tms.biz.testgen.service.impl;
 import com.alibaba.fastjson.JSON;
 import com.seeker.tms.biz.testgen.agent.TestGenAgent;
 import com.seeker.tms.biz.testgen.agent.XMindTreeTools;
-import com.seeker.tms.biz.testgen.config.LlmProperties;
 import com.seeker.tms.biz.testgen.entities.*;
+import com.seeker.tms.biz.testgen.model.ModelConfig;
 import com.seeker.tms.biz.testgen.service.AgentChatService;
+import com.seeker.tms.biz.testgen.service.AiModelService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
 import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
 import dev.langchain4j.data.message.AiMessage;
@@ -34,7 +35,7 @@ public class AgentChatServiceImpl implements AgentChatService {
     private static final int MAX_CHAT_SIZE = 50;
     private static final int RECENT_ROUNDS = 5;
 
-    private final LlmProperties llmProperties;
+    private final AiModelService aiModelService;
     private final StringRedisTemplate redisTemplate;
 
     @Override
@@ -44,7 +45,7 @@ public class AgentChatServiceImpl implements AgentChatService {
         try {
             XMindTreeTools tools = new XMindTreeTools(currentTree);
 
-            LlmProperties.ModelConfig cfg = llmProperties.getThinking();
+            ModelConfig cfg = aiModelService.getThinking();
             OpenAiChatModel model = OpenAiChatModel.builder()
                     .apiKey(cfg.getApiKey())
                     .baseUrl(cfg.getBaseUrl())
@@ -155,7 +156,7 @@ public class AgentChatServiceImpl implements AgentChatService {
         }
 
         try {
-            LlmProperties.ModelConfig cfg = llmProperties.getThinking();
+            ModelConfig cfg = aiModelService.getThinking();
             OpenAiChatModel model = OpenAiChatModel.builder()
                     .apiKey(cfg.getApiKey())
                     .baseUrl(cfg.getBaseUrl())

@@ -7,11 +7,12 @@ import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.metadata.OrderItem;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.seeker.tms.biz.testgen.config.LlmProperties;
 import com.seeker.tms.biz.testgen.entities.*;
 import com.seeker.tms.biz.testgen.enums.TaskStatus;
 import com.seeker.tms.biz.testgen.mapper.TestGenTaskMapper;
+import com.seeker.tms.biz.testgen.model.ModelConfig;
 import com.seeker.tms.biz.testgen.service.AgentChatService;
+import com.seeker.tms.biz.testgen.service.AiModelService;
 import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.service.TestGenService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
@@ -65,7 +66,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     private final AgentChatService agentChatService;
     private final DocumentParserService documentParserService;
     private final StringRedisTemplate redisTemplate;
-    private final LlmProperties llmProperties;
+    private final AiModelService aiModelService;
     private final MinioUtil minioUtil;
 
     private Object getTaskLock(Integer taskId) {
@@ -76,6 +77,11 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
     @Override
     public Integer createTask(TaskCreateDTO dto) {
+        // 任务开始前校验:确保用例生成所需模型已配置(thinking 恒需,勾选图片解析时额外需 vision)
+        // 避免任务开始后才发现无可用模型而失败
+        boolean parseImage = Boolean.TRUE.equals(dto.getParseImage());
+        aiModelService.ensureAvailable(parseImage);
+
         // 删除同名文件的已解析文档，确保使用最新内容
         if (dto.getPrdName() != null) {
             try {
@@ -88,7 +94,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         TestGenTaskPO task = new TestGenTaskPO();
         task.setPrdName(dto.getPrdName());
         task.setPrdType(dto.getPrdType());
-        task.setParseImage(Boolean.TRUE.equals(dto.getParseImage()));
+        task.setParseImage(parseImage);
         task.setCreator(dto.getCreator());
         task.setStatus(TaskStatus.NEW.getCode());
         task.setCreateTime(LocalDateTime.now());
@@ -688,7 +694,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      * 复用 thinking 模型配置；timeoutSec / temperature 由调用方按场景指定。
      */
     private String runStreamingToString(String system, String user, int timeoutSec, double temperature) {
-        LlmProperties.ModelConfig cfg = llmProperties.getThinking();
+        ModelConfig cfg = aiModelService.getThinking();
         OpenAiStreamingChatModel streamingModel = OpenAiStreamingChatModel.builder()
                 .apiKey(cfg.getApiKey())
                 .baseUrl(cfg.getBaseUrl())
@@ -1099,7 +1105,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      * 流式调用 LLM，每解析出一个完整 JSON 对象就回调
      */
     private void callLlmStreaming(String system, String user, java.util.function.Consumer<JSONObject> onItem) {
-        LlmProperties.ModelConfig cfg = llmProperties.getThinking();
+        ModelConfig cfg = aiModelService.getThinking();
         OpenAiStreamingChatModel streamingModel = OpenAiStreamingChatModel.builder()
                 .apiKey(cfg.getApiKey())
                 .baseUrl(cfg.getBaseUrl())

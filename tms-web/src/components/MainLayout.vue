@@ -31,17 +31,17 @@
             <el-icon><Document /></el-icon>
             <template #title>用例生成</template>
           </el-menu-item>
+          <el-menu-item index="/confdiff/compare">
+            <el-icon><DocumentCopy /></el-icon>
+            <template #title>配置对比</template>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="confdiff">
           <template #title>
             <el-icon><Files /></el-icon>
-            <span>配置对比</span>
+            <span>系统管理</span>
           </template>
-          <el-menu-item index="/confdiff/compare">
-            <el-icon><DocumentCopy /></el-icon>
-            <template #title>配置对比</template>
-          </el-menu-item>
           <el-menu-item index="/confdiff/machines">
             <el-icon><Monitor /></el-icon>
             <template #title>机器管理</template>
@@ -49,6 +49,10 @@
           <el-menu-item index="/confdiff/projects">
             <el-icon><FolderOpened /></el-icon>
             <template #title>项目管理</template>
+          </el-menu-item>
+          <el-menu-item index="/confdiff/models">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>模型管理</template>
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
@@ -112,7 +116,8 @@ import {
   Files,
   DocumentCopy,
   Monitor,
-  FolderOpened
+  FolderOpened,
+  MagicStick
 } from '@element-plus/icons-vue'
 
 export default {
@@ -126,7 +131,8 @@ export default {
     Files,
     DocumentCopy,
     Monitor,
-    FolderOpened
+    FolderOpened,
+    MagicStick
   },
   setup() {
     const route = useRoute()
@@ -150,7 +156,8 @@ export default {
         '/toolbox/testgen': '用例生成',
         '/confdiff/compare': '配置对比',
         '/confdiff/machines': '机器管理',
-        '/confdiff/projects': '项目管理'
+        '/confdiff/projects': '项目管理',
+        '/confdiff/models': '模型管理'
       }
       if (route.path.startsWith('/toolbox/testgen/')) return '用例生成工作区'
       return titleMap[route.path] || '设备管理'

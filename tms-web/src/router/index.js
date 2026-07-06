@@ -95,6 +95,15 @@ const routes = [
           title: '配置对比',
           requiresAuth: true
         }
+      },
+      {
+        path: 'confdiff/models',
+        name: 'AiModelList',
+        component: () => import('@/views/confdiff/ModelList.vue'),
+        meta: {
+          title: '模型管理',
+          requiresAuth: true
+        }
       }
     ]
   },

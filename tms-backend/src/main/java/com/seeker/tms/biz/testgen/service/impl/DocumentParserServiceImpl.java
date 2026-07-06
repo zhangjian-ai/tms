@@ -1,6 +1,7 @@
 package com.seeker.tms.biz.testgen.service.impl;
 
-import com.seeker.tms.biz.testgen.config.LlmProperties;
+import com.seeker.tms.biz.testgen.model.ModelConfig;
+import com.seeker.tms.biz.testgen.service.AiModelService;
 import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
 import dev.langchain4j.data.message.ImageContent;
@@ -52,7 +53,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             java.util.regex.Pattern.compile("<img\\b[^>]*?\\bsrc\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>",
                     java.util.regex.Pattern.CASE_INSENSITIVE);
 
-    private final LlmProperties llmProperties;
+    private final AiModelService aiModelService;
 
     @Override
     public String parseDocument(String url, String fileName, boolean parseImage, BiConsumer<Integer, String> progressCallback) {
@@ -174,7 +175,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
         try {
             byte[] compressed = compressImage(imageBytes);
 
-            LlmProperties.ModelConfig visionCfg = llmProperties.getVision();
+            ModelConfig visionCfg = aiModelService.getVision();
             OpenAiChatModel visionModel = OpenAiChatModel.builder()
                     .apiKey(visionCfg.getApiKey())
                     .baseUrl(visionCfg.getBaseUrl())
@@ -265,7 +266,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
     }
 
     private OpenAiChatModel buildVisionModel() {
-        LlmProperties.ModelConfig visionCfg = llmProperties.getVision();
+        ModelConfig visionCfg = aiModelService.getVision();
         return OpenAiChatModel.builder()
                 .apiKey(visionCfg.getApiKey())
                 .baseUrl(visionCfg.getBaseUrl())

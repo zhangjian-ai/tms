@@ -46,6 +46,7 @@ build/
 ### Node.js / Frontend ###
 node_modules/
 tms-web/dist/
+nginx.conf
 
 ### Environment files ###
 .env.local

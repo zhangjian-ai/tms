@@ -110,15 +110,4 @@ spring:
 #  secret-key: password
 #  bucket-name: bucket_name
 #  expire: 300
-#
-## 用例生成 Agent 模型配置
-#testgen:
-#  thinking:
-#    base-url: base-url
-#    api-key: api-key
-#    model: deepseek-v4-pro
-#  vision:
-#    base-url: base-url
-#    api-key: api-key
-#    model: qwen3.6-plus
 

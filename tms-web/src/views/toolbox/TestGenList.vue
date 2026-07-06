@@ -257,6 +257,11 @@ export default {
       try {
         createForm.value.creator = userStore.userInfo?.username || ''
         const res = await testgenApi.createTask(createForm.value)
+        if (res.code !== 0) {
+          // 后端校验失败(如缺少可用模型配置),错误信息在 data 中
+          ElMessage.error(res.data || res.msg || '创建任务失败')
+          return
+        }
         const taskId = res.data.taskId
         createDialogVisible.value = false
         // 先跳转到工作区页面，让 WebSocket 建立后再触发生成
