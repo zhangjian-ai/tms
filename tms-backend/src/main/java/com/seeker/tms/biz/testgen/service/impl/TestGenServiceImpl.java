@@ -77,24 +77,21 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
     @Override
     public Integer createTask(TaskCreateDTO dto) {
-        // 任务开始前校验:确保用例生成所需模型已配置(thinking 恒需,勾选图片解析时额外需 vision)
+        // 任务开始前校验:确保用例生成所需模型已配置(thinking 恒需)
+        // 只要有任一图片输入就必须有 vision 模型；文档输入勾选图片解析时也需 vision
         // 避免任务开始后才发现无可用模型而失败
         boolean parseImage = Boolean.TRUE.equals(dto.getParseImage());
-        aiModelService.ensureAvailable(parseImage);
-
-        // 删除同名文件的已解析文档，确保使用最新内容
-        if (dto.getPrdName() != null) {
-            try {
-                minioUtil.deleteFile(dto.getPrdName() + ".parsed.txt");
-            } catch (Exception e) {
-                // 文件可能不存在，忽略
-            }
-        }
+        List<String> fileNames = splitPrdNames(dto.getPrdName());
+        boolean anyImage = fileNames.stream().anyMatch(documentParserService::isImageInput);
+        boolean allImage = !fileNames.isEmpty() && fileNames.stream().allMatch(documentParserService::isImageInput);
+        aiModelService.ensureAvailable(parseImage || anyImage);
 
         TestGenTaskPO task = new TestGenTaskPO();
         task.setPrdName(dto.getPrdName());
         task.setPrdType(dto.getPrdType());
-        task.setParseImage(parseImage);
+        // 全部为图片时强制关闭图片解析（整图已独立解析，无内嵌图片可再解析）；
+        // 含文档时保留用户选择，图片解析仅作用于文档内嵌图片，图片文件始终走独立整图解析。
+        task.setParseImage(allImage ? false : parseImage);
         task.setCreator(dto.getCreator());
         task.setStatus(TaskStatus.NEW.getCode());
         task.setCreateTime(LocalDateTime.now());
@@ -1031,8 +1028,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     }
 
     private String fetchDocText(Integer taskId, String prdName, String wsKey) {
-        // 尝试从 MinIO 获取已解析的文本
-        String parsedFileName = prdName + ".parsed.txt";
+        // 已解析文本按任务维度缓存（prdName 可能是多个文件名以换行拼接，不适合直接作为对象名）
+        String parsedFileName = "testgen_" + taskId + ".parsed.txt";
         try {
             String parsedUrl = minioUtil.getUrl(parsedFileName);
             byte[] parsedBytes = downloadFile(parsedUrl);
@@ -1051,19 +1048,44 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             TestGenWebSocketHandler.sendProgress(wsKey, "正在解析文档内容...");
         }
 
-        // 是否解析文档内图片由任务创建时的设置决定
+        // 是否解析文档内图片由任务创建时的设置决定（图片输入创建时已强制关闭）
         TestGenTaskPO task = taskMapper.selectById(taskId);
         boolean parseImage = task != null && Boolean.TRUE.equals(task.getParseImage());
 
-        String prdUrl = minioUtil.getUrl(prdName);
-
-        String text = documentParserService.parseDocument(prdUrl, prdName, parseImage, (progress, message) -> {
-            if (wsKey != null) {
-                TestGenWebSocketHandler.sendProgress(wsKey, message);
+        // prdName 支持多个文件（换行拼接）：逐个下载解析，图片会走整图解析、文档走文本/占位符回填
+        List<String> fileNames = splitPrdNames(prdName);
+        List<String> texts = new ArrayList<>();
+        for (int i = 0; i < fileNames.size(); i++) {
+            String name = fileNames.get(i);
+            if (wsKey != null && fileNames.size() > 1) {
+                TestGenWebSocketHandler.sendProgress(wsKey,
+                        "正在解析第 " + (i + 1) + "/" + fileNames.size() + " 个文件：" + name);
             }
-        });
+            String prdUrl = minioUtil.getUrl(name);
+            String t = documentParserService.parseDocument(prdUrl, name, parseImage, (progress, message) -> {
+                if (wsKey != null) {
+                    TestGenWebSocketHandler.sendProgress(wsKey, message);
+                }
+            });
+            if (t != null && !t.isBlank()) {
+                texts.add(t);
+            }
+        }
 
-        // 保存解析后的文本到 MinIO
+        // 多个文件时，进入后续流程前先把多份内容按关联关系整合成一份全量需求文档
+        String text;
+        if (texts.isEmpty()) {
+            text = "";
+        } else if (texts.size() == 1) {
+            text = texts.get(0);
+        } else {
+            if (wsKey != null) {
+                TestGenWebSocketHandler.sendProgress(wsKey, "正在整合多个文档内容为一份全量需求...");
+            }
+            text = consolidateDocuments(texts, fileNames);
+        }
+
+        // 保存解析后的文本到 MinIO（任务维度）
         if (text != null && !text.isBlank()) {
             try {
                 minioUtil.uploadFile(parsedFileName, text.getBytes(StandardCharsets.UTF_8));
@@ -1073,6 +1095,34 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         }
 
         return text != null ? text : "";
+    }
+
+    /** 拆分 prdName：支持多个文件名以换行拼接，去空白、去空项 */
+    private List<String> splitPrdNames(String prdName) {
+        List<String> names = new ArrayList<>();
+        if (prdName == null || prdName.isBlank()) return names;
+        for (String s : prdName.split("\\r?\\n")) {
+            String trimmed = s.trim();
+            if (!trimmed.isEmpty()) names.add(trimmed);
+        }
+        return names;
+    }
+
+    /**
+     * 把多份需求材料（文档解析文本 / 图片解析文本）整合成一份完整、全量的需求文档。
+     * 目的是按实际关联关系有逻辑地合并，尽量保留全部内容，供后续大纲/提取/用例阶段统一使用。
+     */
+    private String consolidateDocuments(List<String> texts, List<String> names) {
+        StringBuilder combined = new StringBuilder();
+        for (int i = 0; i < texts.size(); i++) {
+            String label = (i < names.size() && names.get(i) != null) ? names.get(i) : ("文件" + (i + 1));
+            combined.append("### 材料 ").append(i + 1).append("：").append(label).append('\n')
+                    .append(texts.get(i)).append("\n\n");
+        }
+        String system = PromptLoader.load("consolidate_system");
+        String user = PromptLoader.loadWithParams("consolidate_user",
+                Map.of("docs", truncateDocText(combined.toString())));
+        return runStreamingToString(system, user, 420, 0.3);
     }
 
     private byte[] downloadFile(String url) {
@@ -1450,10 +1500,13 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     // ============ Prompt 模板 ============
 
     private String buildRootTitle(String prdName) {
-        // 从文件名中提取标题（去掉扩展名）
-        if (prdName == null || prdName.isBlank()) return "测试用例";
-        int dotIndex = prdName.lastIndexOf('.');
-        return dotIndex > 0 ? prdName.substring(0, dotIndex) : prdName;
+        // 从文件名中提取标题（去掉扩展名）；多文件时取首个文件名并加"等"
+        List<String> names = splitPrdNames(prdName);
+        if (names.isEmpty()) return "测试用例";
+        String first = names.get(0);
+        int dotIndex = first.lastIndexOf('.');
+        String base = dotIndex > 0 ? first.substring(0, dotIndex) : first;
+        return names.size() > 1 ? base + "等" : base;
     }
 
     private String buildCaseGenSystem() {

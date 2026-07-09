@@ -45,6 +45,9 @@ public class DocumentParserServiceImpl implements DocumentParserService {
     /** 图片识别并发度：vision API 通常按账号有 RPS 限制，4 是稳妥起点 */
     private static final int IMAGE_RECOGNIZE_CONCURRENCY = 4;
 
+    /** 支持「直接上传图片」作为需求来源的图片格式（vision 模型普遍支持） */
+    private static final Set<String> IMAGE_EXTS = Set.of("png", "jpg", "jpeg", "webp");
+
     /** Markdown 图片语法：![alt](src "title")，src 不含空白与右括号，兼容 base64 与 URL */
     private static final java.util.regex.Pattern MD_IMAGE_PATTERN =
             java.util.regex.Pattern.compile("!\\[[^\\]]*]\\(\\s*([^\\s)]+)(?:\\s+\"[^\"]*\")?\\s*\\)");
@@ -72,6 +75,16 @@ public class DocumentParserServiceImpl implements DocumentParserService {
         }
 
         String ext = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
+
+        // 「直接上传图片」输入：走独立的整图解析逻辑，与文档内图片回填(recognizeAndFillBack)完全区分。
+        // 整张图片被视觉模型解析为一份完整需求文本，parseImage 入参在此分支下无意义（图片内无可再解析的内嵌图片）。
+        if (IMAGE_EXTS.contains(ext)) {
+            String text = parseImageAsRequirement(fileBytes, ext, progressCallback);
+            if (progressCallback != null) {
+                progressCallback.accept(100, "图片解析完成");
+            }
+            return text;
+        }
 
         // 第一步：提取文本。仅在需要解析图片时才抽取图片字节（避免无谓的解码与堆占用）
         List<byte[]> pictures = new ArrayList<>();
@@ -266,12 +279,17 @@ public class DocumentParserServiceImpl implements DocumentParserService {
     }
 
     private OpenAiChatModel buildVisionModel() {
+        // 文档内嵌图片回填：产出的是片段，2048 tokens 足够
+        return buildVisionModel(2048);
+    }
+
+    private OpenAiChatModel buildVisionModel(int maxTokens) {
         ModelConfig visionCfg = aiModelService.getVision();
         return OpenAiChatModel.builder()
                 .apiKey(visionCfg.getApiKey())
                 .baseUrl(visionCfg.getBaseUrl())
                 .modelName(visionCfg.getModel())
-                .maxTokens(2048)
+                .maxTokens(maxTokens)
                 .timeout(Duration.ofSeconds(180))
                 .build();
     }
@@ -299,6 +317,43 @@ public class DocumentParserServiceImpl implements DocumentParserService {
         } catch (Exception e) {
             log.warn("图片识别失败，index={}", index, e);
             return "[图片内容无法识别]";
+        }
+    }
+
+    // ---- 直接上传图片：整图解析为完整需求文本（独立于文档内图片回填逻辑）----
+
+    /**
+     * 将「直接上传的图片」用视觉模型解析为一份完整的需求描述文本。
+     * 与 {@link #recognizeAndFillBack} 区分：后者是把文档内嵌图片识别成片段回填占位符，
+     * 此处是把整张图片当作需求来源解析成一份独立、完整的需求文本，供下游需求理解/测试点提取/用例生成使用。
+     */
+    private String parseImageAsRequirement(byte[] imageBytes, String ext, BiConsumer<Integer, String> progressCallback) {
+        try {
+            if (progressCallback != null) {
+                progressCallback.accept(50, "正在解析图片需求内容...");
+            }
+            byte[] compressed = compressImage(imageBytes);
+            String base64 = Base64.getEncoder().encodeToString(compressed);
+            String mimeType = detectMimeType(compressed);
+
+            String systemPrompt = PromptLoader.load("image_parse_system");
+            String userPrompt = PromptLoader.load("image_parse_user");
+
+            UserMessage userMsg = UserMessage.from(
+                    TextContent.from(userPrompt),
+                    ImageContent.from(base64, mimeType)
+            );
+
+            OpenAiChatModel visionModel = buildVisionModel(4096);
+            Response<AiMessage> response = visionModel.generate(List.of(
+                    dev.langchain4j.data.message.SystemMessage.from(systemPrompt),
+                    userMsg
+            ));
+            String text = response.content().text();
+            return text != null ? text : "";
+        } catch (Exception e) {
+            log.warn("图片需求解析失败，ext={}", ext, e);
+            return "";
         }
     }
 
@@ -490,6 +545,20 @@ public class DocumentParserServiceImpl implements DocumentParserService {
         if (imageBytes.length > 3 && imageBytes[0] == (byte) 0x89 && imageBytes[1] == 'P' && imageBytes[2] == 'N') {
             return "image/png";
         }
+        // WEBP：RIFF....WEBP（字节 0-3 为 "RIFF"，字节 8-11 为 "WEBP"）
+        if (imageBytes.length > 11
+                && imageBytes[0] == 'R' && imageBytes[1] == 'I' && imageBytes[2] == 'F' && imageBytes[3] == 'F'
+                && imageBytes[8] == 'W' && imageBytes[9] == 'E' && imageBytes[10] == 'B' && imageBytes[11] == 'P') {
+            return "image/webp";
+        }
         return "image/jpeg";
+    }
+
+    @Override
+    public boolean isImageInput(String fileName) {
+        if (fileName == null) return false;
+        int dot = fileName.lastIndexOf('.');
+        if (dot < 0 || dot == fileName.length() - 1) return false;
+        return IMAGE_EXTS.contains(fileName.substring(dot + 1).toLowerCase());
     }
 }

@@ -7,7 +7,16 @@
 
     <el-table :data="taskList" v-loading="loading" stripe header-cell-class-name="center-header">
       <el-table-column prop="id" label="ID" min-width="80" align="center" />
-      <el-table-column prop="prdName" label="需求文档" min-width="380" align="left" show-overflow-tooltip />
+      <el-table-column prop="prdName" label="需求文档" min-width="380" align="left">
+        <template #default="{ row }">
+          <div
+            v-for="(name, i) in (row.prdName ? row.prdName.split('\n') : [])"
+            :key="i"
+            class="prd-name-line"
+            :title="name"
+          >{{ name }}</div>
+        </template>
+      </el-table-column>
       <el-table-column prop="prdType" label="需求类型" min-width="110" align="center">
         <template #default="{ row }">
           <el-tag size="small">{{ prdTypeMap[row.prdType] || row.prdType }}</el-tag>
@@ -81,17 +90,17 @@
 
     <!-- 新建任务对话框 -->
     <el-dialog v-model="createDialogVisible" title="新建用例生成任务" width="520px" :close-on-click-modal="false" class="create-dialog">
-      <el-form :model="createForm" label-width="90px" :rules="formRules" ref="formRef">
+      <el-form :model="createForm" label-width="130px" :rules="formRules" ref="formRef">
         <el-form-item label="需求文档" prop="prdName">
           <el-upload
             ref="uploadRef"
             :action="uploadUrl"
-            :limit="1"
+            multiple
             :on-success="onUploadSuccess"
             :on-error="onUploadError"
             :on-remove="onUploadRemove"
             :before-upload="beforeUpload"
-            accept=".pdf,.docx,.txt,.md,.markdown"
+            accept=".pdf,.docx,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp"
             :show-file-list="true"
           >
             <el-button type="primary" plain size="default">
@@ -99,7 +108,7 @@
               选择文件
             </el-button>
             <template #tip>
-              <div class="upload-tip">支持 PDF、DOCX、TXT、Markdown 格式，最大 100MB</div>
+              <div class="upload-tip">支持 PDF、DOCX、TXT、Markdown 文档，或 PNG、JPG、JPEG、WEBP 图片，可上传多个文件（将整合为一份需求），单个文件最大 100MB</div>
             </template>
           </el-upload>
         </el-form-item>
@@ -110,9 +119,9 @@
             <el-radio-button label="API">接口需求</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="图片解析" prop="parseImage">
-          <el-switch v-model="createForm.parseImage" />
-          <div class="upload-tip">开启后将解析文档内图片并回填至原文，耗时更长；关闭则仅解析文本内容</div>
+        <el-form-item label="文档内嵌图片解析" prop="parseImage">
+          <el-switch v-model="createForm.parseImage" :disabled="isImageUpload" />
+          <div class="upload-tip">仅对非图片文档生效：开启后会解析文档内嵌的图片并回填至原文，耗时更长；关闭则仅解析文本内容。{{ isImageUpload ? '当前上传均为图片，图片将被直接解析，无需此项。' : '' }}</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -149,6 +158,7 @@ export default {
     const formRef = ref(null)
     const uploadRef = ref(null)
     const createForm = ref({ prdName: '', prdType: 'BIZ', parseImage: false })
+    const isImageUpload = ref(false)
     const uploadUrl = `${config.baseURL}${config.apiPrefix}/common/file/upload`
 
     const formRules = {
@@ -214,9 +224,9 @@ export default {
     }
 
     const beforeUpload = (file) => {
-      const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown']
-      if (!validTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt|md|markdown)$/i)) {
-        ElMessage.error('仅支持 PDF、DOCX、TXT、Markdown 格式')
+      const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown', 'image/png', 'image/jpeg', 'image/webp']
+      if (!validTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt|md|markdown|png|jpg|jpeg|webp)$/i)) {
+        ElMessage.error('仅支持 PDF、DOCX、TXT、Markdown 文档或 PNG、JPG、JPEG、WEBP 图片')
         return false
       }
       if (file.size > 100 * 1024 * 1024) {
@@ -226,25 +236,43 @@ export default {
       return true
     }
 
-    const onUploadSuccess = (response) => {
+    // 根据 el-upload 当前文件列表，同步 prdName（多个文件名以换行拼接）与图片输入状态
+    const isImageName = (name) => /\.(png|jpg|jpeg|webp)$/i.test(name || '')
+    const syncFilesFromList = (uploadFiles) => {
+      const names = (uploadFiles || [])
+        .filter(f => f.response && f.response.code === 0 && f.response.data && f.response.data.fileName)
+        .map(f => f.response.data.fileName)
+      createForm.value.prdName = names.join('\n')
+      // 仅当全部为图片时禁用并强制关闭图片解析（含文档时图片解析仍作用于文档内嵌图片）
+      isImageUpload.value = names.length > 0 && names.every(isImageName)
+      if (isImageUpload.value) {
+        createForm.value.parseImage = false
+      }
+    }
+
+    const onUploadSuccess = (response, uploadFile, uploadFiles) => {
       if (response.code === 0 && response.data) {
-        createForm.value.prdName = response.data.fileName
-        ElMessage.success('文档上传成功')
+        syncFilesFromList(uploadFiles)
+        ElMessage.success('文件上传成功')
       } else {
         ElMessage.error('上传失败')
       }
     }
 
     const onUploadError = () => {
-      ElMessage.error('文档上传失败，请重试')
+      ElMessage.error('文件上传失败，请重试')
     }
 
-    const onUploadRemove = () => {
-      createForm.value.prdName = ''
+    const onUploadRemove = (uploadFile, uploadFiles) => {
+      syncFilesFromList(uploadFiles)
     }
 
     const openCreateDialog = () => {
       createForm.value = { prdName: '', prdType: 'BIZ', parseImage: false }
+      isImageUpload.value = false
+      if (uploadRef.value && uploadRef.value.clearFiles) {
+        uploadRef.value.clearFiles()
+      }
       createDialogVisible.value = true
     }
 
@@ -337,7 +365,7 @@ export default {
     onActivated(fetchList)
 
     return {
-      taskList, total, query, loading, creating, createDialogVisible, createForm, formRef, uploadRef, uploadUrl, formRules,
+      taskList, total, query, loading, creating, createDialogVisible, createForm, isImageUpload, formRef, uploadRef, uploadUrl, formRules,
       statusTextMap, statusTypeMap, prdTypeMap,
       formatDateTime, createTimeFormatter,
       fetchList, onPageChange, onSizeChange, beforeUpload, onUploadSuccess, onUploadError, onUploadRemove,
@@ -371,5 +399,11 @@ export default {
   font-size: 12px;
   color: #909399;
   line-height: 1.5;
+}
+.prd-name-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.6;
 }
 </style>

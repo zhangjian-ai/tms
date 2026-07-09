@@ -15,4 +15,10 @@ public interface DocumentParserService {
     String recognizeImage(byte[] imageBytes);
 
     String recognizeImage(byte[] imageBytes, String surroundingText);
+
+    /**
+     * 判断上传文件是否为「直接上传的图片」输入（按文件后缀）。
+     * 图片输入会走独立的整图解析逻辑，而非文档内图片回填逻辑。
+     */
+    boolean isImageInput(String fileName);
 }
