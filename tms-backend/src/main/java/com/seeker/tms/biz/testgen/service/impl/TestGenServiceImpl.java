@@ -91,7 +91,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         task.setPrdType(dto.getPrdType());
         // 全部为图片时强制关闭图片解析（整图已独立解析，无内嵌图片可再解析）；
         // 含文档时保留用户选择，图片解析仅作用于文档内嵌图片，图片文件始终走独立整图解析。
-        task.setParseImage(allImage ? false : parseImage);
+        task.setParseImage(!allImage && parseImage);
         task.setCreator(dto.getCreator());
         task.setStatus(TaskStatus.NEW.getCode());
         task.setCreateTime(LocalDateTime.now());
@@ -303,7 +303,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         int total = pointIds.size();
         TestGenWebSocketHandler.sendProgress(wsKey, "开始并发生成用例，共 " + total + " 个测试点...");
 
-        int concurrency = Math.min(4, Math.max(1, total));
+        int concurrency = Math.min(4, total);
         ExecutorService pool = Executors.newFixedThreadPool(concurrency, r -> {
             Thread t = new Thread(r, "case-gen-" + taskId);
             t.setDaemon(true);
@@ -367,7 +367,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
         TestGenWebSocketHandler.sendProgress(wsKey, "开始并发提取测试点，共 " + total + " 个章节...");
 
-        int concurrency = Math.min(4, Math.max(1, total));
+        int concurrency = Math.min(4, total);
         ExecutorService pool = Executors.newFixedThreadPool(concurrency, r -> {
             Thread t = new Thread(r, "module-extract-" + taskId);
             t.setDaemon(true);
@@ -551,7 +551,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             if (!scope.isEmpty()) sb.append("：").append(scope);
             sb.append("\n");
         }
-        return sb.length() == 0
+        return sb.isEmpty()
                 ? "（无大纲信息，请仅依据【现有测试点清单】已出现的模块进行核验，不要新增任何模块）"
                 : sb.toString().trim();
     }
@@ -602,10 +602,9 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
     private int applyDuplicateRemovals(XMindNode root, JSONArray groups) {
         if (groups == null || groups.isEmpty()) return 0;
-        Set<String> existingIds = new HashSet<>();
         List<String> tmp = new ArrayList<>();
         collectPointIds(root, tmp);
-        existingIds.addAll(tmp);
+        Set<String> existingIds = new HashSet<>(tmp);
         int removed = 0;
         for (int i = 0; i < groups.size(); i++) {
             JSONObject g = groups.getJSONObject(i);
@@ -738,7 +737,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     private void generateCasesForPointInternal(Integer taskId, String pointId) {
         String wsKey = String.valueOf(taskId);
         Object lock = getTaskLock(taskId);
-        boolean success = false;
 
         // 注册生成中状态
         generatingPoints.computeIfAbsent(taskId, k -> ConcurrentHashMap.newKeySet()).add(pointId);
@@ -848,7 +846,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                     TestGenWebSocketHandler.sendPointCasesGenerated(wsKey, pointId, finalCases, true);
                 }
             }
-            success = true;
         } catch (Exception e) {
             log.error("单测试点生成用例失败, taskId={}, pointId={}", taskId, pointId, e);
             // 失败：保留 point 节点 + 标 failed 图标，让用户能识别并重试
@@ -874,7 +871,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     }
 
     // ---- 完成任务 ----
-
     @Override
     public String finishTask(Integer taskId) {
         XMindNode root = getXMindData(taskId);
