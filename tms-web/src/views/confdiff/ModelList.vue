@@ -148,7 +148,7 @@ export default {
     const openDialog = (row) => {
       Object.assign(form, emptyForm())
       if (row) {
-        // 密钥后端脱敏,不回显;留空表示不修改。用途标记通过列表开关管理,不在表单中
+        // 密钥脱敏不回显，留空表示不修改；用途标记在列表开关维护，不入表单
         Object.assign(form, {
           id: row.id, name: row.name, baseUrl: row.baseUrl,
           modelName: row.modelName, remark: row.remark

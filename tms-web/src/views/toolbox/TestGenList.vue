@@ -286,7 +286,7 @@ export default {
         createForm.value.creator = userStore.userInfo?.username || ''
         const res = await testgenApi.createTask(createForm.value)
         if (res.code !== 0) {
-          // 后端校验失败(如缺少可用模型配置),错误信息在 data 中
+          // 失败信息在 data 中
           ElMessage.error(res.data || res.msg || '创建任务失败')
           return
         }

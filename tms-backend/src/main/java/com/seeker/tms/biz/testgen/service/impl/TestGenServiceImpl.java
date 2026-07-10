@@ -13,6 +13,7 @@ import com.seeker.tms.biz.testgen.mapper.TestGenTaskMapper;
 import com.seeker.tms.biz.testgen.model.ModelConfig;
 import com.seeker.tms.biz.testgen.service.AgentChatService;
 import com.seeker.tms.biz.testgen.service.AiModelService;
+import com.seeker.tms.biz.testgen.service.TestGenPromptService;
 import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.service.TestGenService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
@@ -67,6 +68,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     private final DocumentParserService documentParserService;
     private final StringRedisTemplate redisTemplate;
     private final AiModelService aiModelService;
+    private final TestGenPromptService testGenPromptService;
     private final MinioUtil minioUtil;
 
     private Object getTaskLock(Integer taskId) {
@@ -77,9 +79,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
     @Override
     public Integer createTask(TaskCreateDTO dto) {
-        // 任务开始前校验:确保用例生成所需模型已配置(thinking 恒需)
-        // 只要有任一图片输入就必须有 vision 模型；文档输入勾选图片解析时也需 vision
-        // 避免任务开始后才发现无可用模型而失败
+        // 校验所需模型已配置:thinking 恒需;有图片输入或勾选图片解析时还需 vision
         boolean parseImage = Boolean.TRUE.equals(dto.getParseImage());
         List<String> fileNames = splitPrdNames(dto.getPrdName());
         boolean anyImage = fileNames.stream().anyMatch(documentParserService::isImageInput);
@@ -230,7 +230,9 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
 
             List<OutlineVO.ModuleNode> modules = effective.getModules();
             int total = modules.size();
-            int failed = parallelExtractModules(wsKey, taskId, root, modules, summary, truncatedDoc);
+            // 解析提取阶段系统提示词，本批章节复用一份
+            String extractSystem = testGenPromptService.getSystemPrompt("extract_points_system");
+            int failed = parallelExtractModules(wsKey, taskId, root, modules, summary, truncatedDoc, extractSystem);
 
             int pointCount = countNodes(root, "point");
             saveXMindData(taskId, root);
@@ -303,6 +305,9 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         int total = pointIds.size();
         TestGenWebSocketHandler.sendProgress(wsKey, "开始并发生成用例，共 " + total + " 个测试点...");
 
+        // 解析用例生成阶段系统提示词，本批测试点复用一份
+        String caseSystem = testGenPromptService.getSystemPrompt("case_gen_system");
+
         int concurrency = Math.min(4, total);
         ExecutorService pool = Executors.newFixedThreadPool(concurrency, r -> {
             Thread t = new Thread(r, "case-gen-" + taskId);
@@ -317,7 +322,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             for (String pid : pointIds) {
                 futures.add(CompletableFuture.runAsync(() -> {
                     try {
-                        generateCasesForPointInternal(taskId, pid);
+                        generateCasesForPointInternal(taskId, pid, caseSystem);
                         ok.incrementAndGet();
                     } catch (Exception ex) {
                         fail.incrementAndGet();
@@ -355,7 +360,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      */
     private int parallelExtractModules(String wsKey, Integer taskId, XMindNode root,
                                        List<OutlineVO.ModuleNode> modules,
-                                       String summary, String docText) {
+                                       String summary, String docText, String extractSystem) {
         // 过滤空模块名，并保留原索引用于进度文案
         List<OutlineVO.ModuleNode> effective = new ArrayList<>();
         for (OutlineVO.ModuleNode m : modules) {
@@ -381,7 +386,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                 futures.add(CompletableFuture.runAsync(() -> {
                     String moduleName = m.getName().trim();
                     try {
-                        extractModulePoints(wsKey, taskId, root, m, summary, docText);
+                        extractModulePoints(wsKey, taskId, root, m, summary, docText, extractSystem);
                     } catch (Exception ex) {
                         failedCnt.incrementAndGet();
                         log.warn("章节 [{}] 提取失败，继续其他模块", moduleName, ex);
@@ -404,7 +409,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     /** 单模块提取：流式调用，每解析出一个测试点立即挂树并推送；失败重试 1 次 */
     private void extractModulePoints(String wsKey, Integer taskId, XMindNode root,
                                      OutlineVO.ModuleNode module,
-                                     String summary, String docText) {
+                                     String summary, String docText, String extractSystem) {
         String moduleName = module.getName() == null ? "" : module.getName().trim();
         String moduleScope = module.getScope() == null ? "" : module.getScope();
 
@@ -414,8 +419,8 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         params.put("summary", summary);
         params.put("doc", docText);
 
-        String system = PromptLoader.load("extract_module_system");
-        String user = PromptLoader.loadWithParams("extract_module_user", params);
+        String system = extractSystem;
+        String user = PromptLoader.loadWithParams("extract_points_user", params);
         Object lock = getTaskLock(taskId);
 
         // 失败重试 1 次：限流/瞬态网络抖动场景能自愈。
@@ -461,7 +466,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      * 调用规划 Agent，期望返回单个 OutlineVO 形态的 JSON 对象。
      */
     private OutlineVO callPlanningAgent(String docText) {
-        String system = PromptLoader.load("planning_system");
+        String system = testGenPromptService.getSystemPrompt("planning_system");
         String user = PromptLoader.loadWithParams("planning_user", Map.of("doc", docText));
         String response = runStreamingToString(system, user, 300, 0.5);
         return parseOutlineResponse(response);
@@ -515,7 +520,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         params.put("doc", truncatedDoc);
 
         String response = callLlmBlocking(
-                PromptLoader.load("refine_points_system"),
+                testGenPromptService.getSystemPrompt("refine_points_system"),
                 PromptLoader.loadWithParams("refine_points_user", params));
         JSONObject result = parseRefineResponse(response);
         if (result == null) {
@@ -725,7 +730,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     @Override
     @Async("taskExecutor")
     public void generateCasesForPoint(Integer taskId, String pointId) {
-        generateCasesForPointInternal(taskId, pointId);
+        generateCasesForPointInternal(taskId, pointId, testGenPromptService.getSystemPrompt("case_gen_system"));
     }
 
     /**
@@ -734,7 +739,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
      * 自动批量接力与用户手动触发都复用此方法（前者通过 autoGenerateCasesForAllPoints
      * 直接同步调用以拿到完成时机，后者通过 @Async 包装的 generateCasesForPoint 异步调）。
      */
-    private void generateCasesForPointInternal(Integer taskId, String pointId) {
+    private void generateCasesForPointInternal(Integer taskId, String pointId, String caseSystem) {
         String wsKey = String.valueOf(taskId);
         Object lock = getTaskLock(taskId);
 
@@ -777,7 +782,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             pointPayload.put("module", module);
             pointPayload.put("content", pointTitle);
 
-            String system = buildCaseGenSystem();
+            String system = caseSystem;
             String user = PromptLoader.loadWithParams("case_gen_user", Map.of(
                     "doc", truncateDocText(docText),
                     "points", JSON.toJSONString(pointPayload)
@@ -1115,7 +1120,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             combined.append("### 材料 ").append(i + 1).append("：").append(label).append('\n')
                     .append(texts.get(i)).append("\n\n");
         }
-        String system = PromptLoader.load("consolidate_system");
+        String system = testGenPromptService.getSystemPrompt("consolidate_system");
         String user = PromptLoader.loadWithParams("consolidate_user",
                 Map.of("docs", truncateDocText(combined.toString())));
         return runStreamingToString(system, user, 420, 0.3);
@@ -1503,9 +1508,5 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         int dotIndex = first.lastIndexOf('.');
         String base = dotIndex > 0 ? first.substring(0, dotIndex) : first;
         return names.size() > 1 ? base + "等" : base;
-    }
-
-    private String buildCaseGenSystem() {
-        return PromptLoader.load("case_gen_system");
     }
 }

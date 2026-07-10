@@ -88,6 +88,22 @@ public class MinioUtil {
     }
 
     /**
+     * 读取对象内容为字符串(UTF-8)。对象不存在或读取失败时抛异常。
+     */
+    public String getContent(String objectKey) {
+        String bucketName = minioConfig.getBucketName();
+        try (InputStream in = minioClient.getObject(GetObjectArgs.builder()
+                .bucket(bucketName)
+                .object(objectKey)
+                .build())) {
+            byte[] data = in.readAllBytes();
+            return new String(data, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new RuntimeException("读取对象内容失败: " + objectKey + ", " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 获取文件临时访问链接，链接默认有效时间300s
      */
     public String getUrl(String fileName) {

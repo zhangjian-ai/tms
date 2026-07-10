@@ -2,6 +2,7 @@ package com.seeker.tms.biz.testgen.service.impl;
 
 import com.seeker.tms.biz.testgen.model.ModelConfig;
 import com.seeker.tms.biz.testgen.service.AiModelService;
+import com.seeker.tms.biz.testgen.service.TestGenPromptService;
 import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
 import dev.langchain4j.data.message.ImageContent;
@@ -57,6 +58,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
                     java.util.regex.Pattern.CASE_INSENSITIVE);
 
     private final AiModelService aiModelService;
+    private final TestGenPromptService testGenPromptService;
 
     @Override
     public String parseDocument(String url, String fileName, boolean parseImage, BiConsumer<Integer, String> progressCallback) {
@@ -229,7 +231,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
         // 单次构造 vision model，复用底层连接池
         OpenAiChatModel visionModel = buildVisionModel();
-        String systemPrompt = PromptLoader.load("image_recognize_system");
+        String systemPrompt = testGenPromptService.getSystemPrompt("embedded_image_system");
 
         ExecutorService pool = Executors.newFixedThreadPool(
                 Math.min(IMAGE_RECOGNIZE_CONCURRENCY, Math.max(1, total)),
@@ -301,7 +303,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             String base64 = Base64.getEncoder().encodeToString(compressed);
             String mimeType = detectMimeType(compressed);
 
-            String userPrompt = PromptLoader.loadWithParams("image_recognize_user",
+            String userPrompt = PromptLoader.loadWithParams("embedded_image_user",
                     Map.of("index", String.valueOf(index), "doc", fullDoc));
 
             UserMessage userMsg = UserMessage.from(
@@ -336,8 +338,8 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             String base64 = Base64.getEncoder().encodeToString(compressed);
             String mimeType = detectMimeType(compressed);
 
-            String systemPrompt = PromptLoader.load("image_parse_system");
-            String userPrompt = PromptLoader.load("image_parse_user");
+            String systemPrompt = testGenPromptService.getSystemPrompt("image_requirement_system");
+            String userPrompt = PromptLoader.load("image_requirement_user");
 
             UserMessage userMsg = UserMessage.from(
                     TextContent.from(userPrompt),

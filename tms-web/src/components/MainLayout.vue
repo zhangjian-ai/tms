@@ -54,6 +54,10 @@
             <el-icon><MagicStick /></el-icon>
             <template #title>模型管理</template>
           </el-menu-item>
+          <el-menu-item index="/confdiff/prompts">
+            <el-icon><Memo /></el-icon>
+            <template #title>提示词管理</template>
+          </el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -117,7 +121,8 @@ import {
   DocumentCopy,
   Monitor,
   FolderOpened,
-  MagicStick
+  MagicStick,
+  Memo
 } from '@element-plus/icons-vue'
 
 export default {
@@ -132,7 +137,8 @@ export default {
     DocumentCopy,
     Monitor,
     FolderOpened,
-    MagicStick
+    MagicStick,
+    Memo
   },
   setup() {
     const route = useRoute()
@@ -157,7 +163,8 @@ export default {
         '/confdiff/compare': '配置对比',
         '/confdiff/machines': '机器管理',
         '/confdiff/projects': '项目管理',
-        '/confdiff/models': '模型管理'
+        '/confdiff/models': '模型管理',
+        '/confdiff/prompts': '提示词管理'
       }
       if (route.path.startsWith('/toolbox/testgen/')) return '用例生成工作区'
       return titleMap[route.path] || '设备管理'

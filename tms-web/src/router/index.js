@@ -104,6 +104,15 @@ const routes = [
           title: '模型管理',
           requiresAuth: true
         }
+      },
+      {
+        path: 'confdiff/prompts',
+        name: 'PromptList',
+        component: () => import('@/views/confdiff/PromptList.vue'),
+        meta: {
+          title: '提示词管理',
+          requiresAuth: true
+        }
       }
     ]
   },

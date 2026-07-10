@@ -63,3 +63,21 @@ export const modelApi = {
     return api.post('/testgen/model/delete', null, { params: { id } })
   }
 }
+
+export const promptApi = {
+  list(params) {
+    return api.get('/testgen/prompt/list', { params })
+  },
+  detail(id) {
+    return api.get('/testgen/prompt/detail', { params: { id } })
+  },
+  stages() {
+    return api.get('/testgen/prompt/stages')
+  },
+  saveOrUpdate(data) {
+    return api.post('/testgen/prompt/saveOrUpdate', data)
+  },
+  delete(id) {
+    return api.post('/testgen/prompt/delete', null, { params: { id } })
+  }
+}

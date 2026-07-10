@@ -65,10 +65,10 @@ public class AiModelServiceImpl extends ServiceImpl<AiModelMapper, AiModelPO> im
             if (old == null) {
                 throw new IllegalArgumentException("无效的模型ID: " + dto.getId());
             }
-            // 角色标记由列表快速开关(mark)管理,编辑保存时一律沿用原值,避免被清除
+            // 角色标记仅由 mark 接口维护，编辑时沿用原值
             po.setUseAsThinking(old.getUseAsThinking());
             po.setUseAsVision(old.getUseAsVision());
-            // 密钥留空表示不修改,回填原值
+            // 密钥留空表示不修改
             if (StrUtil.isBlank(dto.getApiKey())) {
                 po.setApiKey(old.getApiKey());
             }
