@@ -572,11 +572,11 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         if ("point".equals(node.getType())) {
             String modulePath = buildModulePath(root, node);
             String[] parts = modulePath.split("-", 2);
-            String type = parts.length > 0 ? parts[0] : "功能逻辑";
+            String category = parts.length > 0 ? parts[0] : "功能逻辑";
             String module = parts.length > 1 ? parts[1] : "";
             Map<String, String> m = new LinkedHashMap<>();
             m.put("id", node.getId());
-            m.put("type", type);
+            m.put("category", category);
             m.put("module", module);
             m.put("content", node.getTitle());
             list.add(m);
@@ -635,14 +635,16 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         // 收集允许的模块/子模块标题，用于校验 module 字段是否落在大纲内
         Set<String> allowedModuleTitles = new HashSet<>();
         collectModuleTitles(root, allowedModuleTitles);
-        Set<String> allowedTypes = Set.of("功能逻辑", "美术效果", "配置管理", "数据埋点", "异常边界");
         int added = 0;
         for (int i = 0; i < additions.size(); i++) {
             JSONObject a = additions.getJSONObject(i);
-            String type = a.getString("type");
+            // 分类字段：优先读 category，兼容旧提示词的 type
+            String category = a.getString("category");
+            if (category == null) category = a.getString("type");
             String module = a.getString("module");
             String content = a.getString("content");
-            if (type == null || !allowedTypes.contains(type)) continue;
+            // 分类维度由提示词自定义，此处只校验非空，不再限定固定枚举
+            if (category == null || category.isBlank()) continue;
             if (module == null || module.isBlank()) continue;
             if (content == null || content.isBlank()) continue;
             // module 必须落在已存在的模块/子模块上
@@ -653,7 +655,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                 continue;
             }
             JSONObject pj = new JSONObject();
-            pj.put("type", type);
+            pj.put("category", category);
             pj.put("module", module);
             pj.put("content", content);
             addPointToTree(root, pj);
@@ -774,11 +776,11 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
                 modulePath = buildModulePath(root, pointNode);
             }
             String[] pathParts = modulePath.split("-", 2);
-            String type = pathParts.length > 0 ? pathParts[0] : "功能逻辑";
+            String category = pathParts.length > 0 ? pathParts[0] : "功能逻辑";
             String module = pathParts.length > 1 ? pathParts[1] : "";
 
             JSONObject pointPayload = new JSONObject();
-            pointPayload.put("type", type);
+            pointPayload.put("category", category);
             pointPayload.put("module", module);
             pointPayload.put("content", pointTitle);
 
@@ -1251,17 +1253,19 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
     /** 将单个测试点 JSON 添加到 XMind 树，返回新建 point 节点的 id（用于前端精确居中） */
     private String addPointToTree(XMindNode root, JSONObject pointJson) {
         String module = pointJson.getString("module");
-        String type = pointJson.getString("type");
+        // 分类字段：优先读 category，兼容旧提示词/历史数据的 type
+        String category = pointJson.getString("category");
+        if (category == null) category = pointJson.getString("type");
         String content = pointJson.getString("content");
         if (module == null || content == null) return null;
 
         // 清理流式输出带来的换行符
         module = module.replaceAll("[\\n\\r]+", " ").trim();
         content = content.replaceAll("[\\n\\r]+", " ").trim();
-        if (type != null) type = type.replaceAll("[\\n\\r]+", " ").trim();
+        if (category != null) category = category.replaceAll("[\\n\\r]+", " ").trim();
 
-        // 1. 先找或创建分类节点（功能逻辑、界面UI等）
-        String typeLabel = type != null ? type : "功能逻辑";
+        // 1. 先找或创建分类节点（分类维度，默认测试类型：功能逻辑等）
+        String typeLabel = category != null ? category : "功能逻辑";
         XMindNode typeNode = findChildByTitle(root, typeLabel);
         if (typeNode == null) {
             typeNode = newNode("module_" + UUID.randomUUID(), typeLabel, "module");
