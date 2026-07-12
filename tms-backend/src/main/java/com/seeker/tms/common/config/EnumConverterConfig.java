@@ -25,18 +25,15 @@ public class EnumConverterConfig implements WebMvcConfigurer {
 
                 String value = source.trim();
 
-                // 尝试通过name值转换
                 for (DeviceSys deviceSys : DeviceSys.values()) {
                     if (deviceSys.getName().equalsIgnoreCase(value)) {
                         return deviceSys;
                     }
                 }
 
-                // 如果通过name不匹配，尝试通过枚举名称转换
                 try {
                     return DeviceSys.valueOf(value.toUpperCase());
                 } catch (IllegalArgumentException ex) {
-                    // 如果都不匹配，返回null
                     return null;
                 }
             }
@@ -52,7 +49,6 @@ public class EnumConverterConfig implements WebMvcConfigurer {
 
                 String value = source.trim();
 
-                // 尝试通过code值转换
                 try {
                     int code = Integer.parseInt(value);
                     for (BoolStatus BoolStatus : BoolStatus.values()) {
@@ -61,11 +57,9 @@ public class EnumConverterConfig implements WebMvcConfigurer {
                         }
                     }
                 } catch (NumberFormatException e) {
-                    // 如果不是数字，尝试通过枚举名称转换
                     try {
                         return BoolStatus.valueOf(value.toUpperCase());
                     } catch (IllegalArgumentException ex) {
-                        // 如果都不匹配，返回null
                         return null;
                     }
                 }

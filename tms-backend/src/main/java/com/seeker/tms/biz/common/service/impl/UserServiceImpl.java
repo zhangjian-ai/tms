@@ -1,40 +1,22 @@
 package com.seeker.tms.biz.common.service.impl;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.seeker.tms.biz.common.entities.UserDTO;
+import com.seeker.tms.biz.common.entities.LoginVO;
 import com.seeker.tms.biz.common.entities.UserPO;
 import com.seeker.tms.biz.common.mapper.UserMapper;
 import com.seeker.tms.biz.common.service.UserService;
 import org.springframework.stereotype.Service;
 
 @Service
-public class UserServiceImpl extends ServiceImpl<UserMapper, UserPO> implements UserService  {
+public class UserServiceImpl extends ServiceImpl<UserMapper, UserPO> implements UserService {
 
     @Override
-    public UserPO signup(UserDTO userDTO) {
-        UserPO userPO = this.lambdaQuery().eq(UserPO::getUsername, userDTO.getUsername()).one();
-        if (userPO != null) {
-            throw new IllegalArgumentException("用户名已存在: " + userDTO.getUsername());
+    public LoginVO currentUser(String username) {
+        UserPO user = getOne(Wrappers.<UserPO>lambdaQuery().eq(UserPO::getUsername, username));
+        if (user == null) {
+            throw new IllegalStateException("用户不存在");
         }
-
-        UserPO userPO1 = new UserPO();
-        userPO1.setUsername(userDTO.getUsername());
-        userPO1.setPassword(userDTO.getPassword());
-
-        boolean saved = this.save(userPO1);
-        if (saved){
-            return userPO1;
-        }
-
-        throw new RuntimeException("用户新增失败 " + userDTO.getUsername());
-    }
-
-    @Override
-    public Boolean login(UserDTO userDTO) {
-        UserPO userPO = this.lambdaQuery().eq(UserPO::getUsername, userDTO.getUsername())
-                .eq(UserPO::getPassword, userDTO.getPassword())
-                .one();
-
-        return userPO != null;
+        return new LoginVO(null, user.getUsername(), user.getAvatar());
     }
 }

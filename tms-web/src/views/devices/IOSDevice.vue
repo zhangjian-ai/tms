@@ -1,11 +1,9 @@
 <template>
   <div class="device-connection">
-    <!-- 主要内容区域 -->
     <div class="main-content">
       <!-- 左侧连接信息区域 -->
       <div class="connection-info-area">
         <div class="info-content">
-          <!-- 连接配置 -->
           <el-card class="info-card">
             <template #header>
               <div class="card-header">
@@ -37,7 +35,6 @@
             </el-descriptions>
           </el-card>
 
-          <!-- 元素信息卡片 -->
           <el-card v-if="elementInspectorEnabled" class="info-card">
             <template #header>
               <div class="card-header">
@@ -88,7 +85,6 @@
       <div class="screen-area">
         <div class="screen-header">
           <h3>设备投屏</h3>
-          <!-- 功能按钮 -->
           <div class="header-controls" v-if="isConnected && videoResolution.width > 0">
             <el-button
               type="warning"
@@ -204,13 +200,11 @@
               </div>
               <div class="log-details">
                 <div v-if="log.element" class="element-info">
-                  <!-- 文本信息单独一行 -->
                   <div v-if="log.element.label || log.element.name" class="element-text-row">
                     <span class="element-text" @click="copyToClipboard(log.element.label || log.element.name, '文本')">
                       <span class="property-label">文本:</span>{{ log.element.label || log.element.name }}
                     </span>
                   </div>
-                  <!-- 其他属性信息 -->
                   <div class="element-main">
                     <span v-if="log.element.type" class="element-class" @click="copyToClipboard(log.element.type, '类型')">
                       <span class="property-label">类型:</span>{{ log.element.type }}
@@ -257,7 +251,6 @@ import { useIdleRelease } from '@/composables/useIdleRelease'
 import config from '@/config/index.js'
 import pako from 'pako'
 
-// 生成会话令牌
 const genSessionId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID()
@@ -273,7 +266,6 @@ const deviceSessionStore = useDeviceSessionStore()
 // 设备序列号（用于 WebSocket 路径）
 const deviceSerial = ref(route.query.serial || '')
 
-// 设备 ID
 const deviceId = ref(route.params.id ? Number(route.params.id) : null)
 
 // 本页会话令牌：优先沿用列表页占用时的 sessionId，否则 onMounted 时自行占用
@@ -287,10 +279,8 @@ const connectionInfo = reactive({
   adbPort: ''
 })
 
-// 加载状态
 const loading = ref(true)
 
-// 连接状态
 const isConnected = ref(false)
 let controlWs = null
 let screenWs = null
@@ -303,12 +293,10 @@ const videoResolution = reactive({
   aspectRatio: 9 / 16
 })
 
-// Canvas 与容器引用
 const screenCanvas = ref(null)
 const videoWrapperRef = ref(null)
 let canvasContext = null
 
-// 鼠标/触摸状态
 const mouseState = reactive({
   isDown: false,
   startX: 0,
@@ -316,21 +304,17 @@ const mouseState = reactive({
   beganAt: null  // 按下时间，用于区分点击/长按
 })
 
-// 操作进行中标志
 let operationPending = false
 
-// 滚轮防抖
 let wheelDebounceTimer = null
 let wheelAccumulatedY = 0
 let wheelStartCoords = null
 
 let resizeTimer = null
 
-// 设备占用心跳
 let holdWs = null
 let holdHeartbeatTimer = null
 
-// 元素检查器相关
 const elementInspectorEnabled = ref(false)
 const operationLogs = ref([])
 const hoverElement = ref(null)
@@ -339,7 +323,6 @@ let xmlCheckTimer = null
 let lastXmlHash = ref('')
 let elementHoverTimer = null
 
-// 获取 WDA URL
 const getWDAUrl = () => {
   if (!connectionInfo.adbHost || !connectionInfo.adbPort) {
     return '-'
@@ -347,7 +330,6 @@ const getWDAUrl = () => {
   return `http://${connectionInfo.adbHost}:${connectionInfo.adbPort}`
 }
 
-// 从后端获取设备连接信息
 const fetchConnectionInfo = async () => {
   if (!deviceId.value) return false
   try {
@@ -366,7 +348,6 @@ const fetchConnectionInfo = async () => {
   return !!(connectionInfo.proxyHost && connectionInfo.proxyPort)
 }
 
-// 有界轮询等待代理就绪
 const waitForConnectionReady = async (timeoutMs = 40000, intervalMs = 1500) => {
   loading.value = true
   const start = Date.now()
@@ -381,7 +362,6 @@ const waitForConnectionReady = async (timeoutMs = 40000, intervalMs = 1500) => {
   }
 }
 
-// 复制 WDA 命令
 const copyWDACommand = () => {
   const url = getWDAUrl()
   if (url === '-') return
@@ -439,7 +419,6 @@ const adjustScreenContainer = () => {
   }
 }
 
-// 发送控制消息
 const sendControlMessage = (message) => {
   if (controlWs && controlWs.readyState === WebSocket.OPEN) {
     controlWs.send(JSON.stringify(message))
@@ -448,7 +427,6 @@ const sendControlMessage = (message) => {
   }
 }
 
-// 连接设备
 const connectDevice = async () => {
   try {
     await fetchConnectionInfo()
@@ -471,7 +449,6 @@ const connectDevice = async () => {
   }
 }
 
-// 连接控制 WebSocket
 const connectControlWebSocket = () => {
   return new Promise((resolve, reject) => {
     const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/control`
@@ -504,7 +481,6 @@ const connectControlWebSocket = () => {
   })
 }
 
-// 连接投屏 WebSocket
 const connectScreenWebSocket = () => {
   return new Promise((resolve, reject) => {
     const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/screen`
@@ -519,11 +495,9 @@ const connectScreenWebSocket = () => {
 
     screenWs.onmessage = (event) => {
       try {
-        // 处理二进制 JPEG 帧
         if (event.data instanceof ArrayBuffer) {
           renderBinaryFrame(event.data)
         } else {
-          // 处理 JSON 消息
           const data = JSON.parse(event.data)
           handleScreenMessage(data)
         }
@@ -543,7 +517,6 @@ const connectScreenWebSocket = () => {
   })
 }
 
-// 处理控制消息
 const handleControlMessage = (data) => {
   switch (data.type) {
     case 'connected':
@@ -601,7 +574,6 @@ const handleControlMessage = (data) => {
   }
 }
 
-// 处理投屏消息
 const handleScreenMessage = (data) => {
   switch (data.type) {
     case 'stream_started':
@@ -621,11 +593,9 @@ const handleScreenMessage = (data) => {
   }
 }
 
-// 渲染二进制 JPEG 帧
 const renderBinaryFrame = (arrayBuffer) => {
   if (!canvasContext) return
 
-  // 将 ArrayBuffer 转换为 Blob
   const blob = new Blob([arrayBuffer], { type: 'image/jpeg' })
   const url = URL.createObjectURL(blob)
 
@@ -640,7 +610,6 @@ const renderBinaryFrame = (arrayBuffer) => {
   img.src = url
 }
 
-// 将事件坐标转换为设备坐标
 const getEventDeviceCoords = (clientX, clientY) => {
   const canvas = screenCanvas.value
   if (!canvas || !videoResolution.width || !videoResolution.height) return null
@@ -716,14 +685,11 @@ const handleMouseUp = (event) => {
   let promise
   if (moveX < 10 && moveY < 10) {
     if (duration < 200) {
-      // 短按 → 点击
       promise = sendClick(mouseState.startX, mouseState.startY)
     } else {
-      // 长按
       promise = sendLongClick(mouseState.startX, mouseState.startY, duration)
     }
   } else {
-    // 滑动
     promise = sendSwipe(mouseState.startX, mouseState.startY, endX, endY)
   }
 
@@ -732,7 +698,6 @@ const handleMouseUp = (event) => {
   })
 }
 
-// 禁用 canvas 触摸（操作进行中）
 const disableCanvasTouch = () => {
   operationPending = true
   const canvas = screenCanvas.value
@@ -742,7 +707,6 @@ const disableCanvasTouch = () => {
   }
 }
 
-// 恢复 canvas 触摸
 const enableCanvasTouch = () => {
   operationPending = false
   const canvas = screenCanvas.value
@@ -756,17 +720,14 @@ const enableCanvasTouch = () => {
 const handleWheel = (event) => {
   if (!isConnected.value) return
 
-  // 记录滚动开始坐标
   if (!wheelStartCoords) {
     const coords = getEventDeviceCoords(event.clientX, event.clientY)
     if (!coords) return
     wheelStartCoords = coords
   }
 
-  // 累积滚动量
   wheelAccumulatedY += event.deltaY
 
-  // 清除之前的防抖定时器
   if (wheelDebounceTimer) {
     clearTimeout(wheelDebounceTimer)
   }
@@ -796,13 +757,11 @@ const handleWheel = (event) => {
 
     sendSwipe(startX, startY, endX, endY)
 
-    // 重置状态
     wheelStartCoords = null
     wheelDebounceTimer = null
   }, 150)
 }
 
-// 触摸事件
 const handleTouchStart = (event) => {
   if (event.touches.length === 0) return
   handleMouseDown({ clientX: event.touches[0].clientX, clientY: event.touches[0].clientY, preventDefault: () => {} })
@@ -819,9 +778,7 @@ const handleTouchEnd = (event) => {
   handleMouseUp({ clientX: t.clientX, clientY: t.clientY, preventDefault: () => {} })
 }
 
-// 发送点击 - 返回 Promise
 const sendClick = (x, y) => {
-  // 记录操作日志
   if (elementInspectorEnabled.value) {
     const logData = {
       coordinates: `(${x}, ${y})`,
@@ -844,7 +801,6 @@ const sendClick = (x, y) => {
   })
 }
 
-// 发送长按 - 返回 Promise
 const sendLongClick = (x, y, duration) => {
   return new Promise((resolve) => {
     pendingResolve = resolve
@@ -855,14 +811,12 @@ const sendLongClick = (x, y, duration) => {
 
 // 发送滑动 - duration 100ms
 const sendSwipe = (startX, startY, endX, endY) => {
-  // 记录操作日志
   if (elementInspectorEnabled.value) {
     const logData = {
       coordinates: `从(${startX}, ${startY})到(${endX}, ${endY})`,
       timestamp: new Date()
     }
 
-    // 尝试查找起始位置的元素
     const startElement = findElementAtPosition(startX, startY)
     if (startElement) {
       logData.element = { ...startElement }
@@ -891,7 +845,6 @@ const sendSwipe = (startX, startY, endX, endY) => {
 // 等待 WDA 操作完成的回调
 let pendingResolve = null
 
-// 控制消息响应处理
 const resolveControlResponse = (msg) => {
   const resultTypes = ['click_result', 'long_click_result', 'swipe_result']
   if (resultTypes.includes(msg.type) && pendingResolve) {
@@ -901,27 +854,22 @@ const resolveControlResponse = (msg) => {
   }
 }
 
-// 截屏
 const handleScreenshot = () => {
   sendControlMessage({ type: 'screenshot' })
 }
 
-// Dump XML
 const handleDumpXml = () => {
   sendControlMessage({ type: 'dump_hierarchy' })
 }
 
-// HOME 键
 const handleHomeKey = () => {
   sendControlMessage({ type: 'home' })
 }
 
-// 唤醒屏幕
 const handleWakeScreen = () => {
   sendControlMessage({ type: 'wake_screen' })
 }
 
-// 下载截图
 const downloadScreenshot = (base64Image) => {
   const link = document.createElement('a')
   link.href = `data:image/png;base64,${base64Image}`
@@ -963,7 +911,6 @@ const saveXmlFile = (content) => {
   ElMessage.success('XML 已导出')
 }
 
-// 释放设备
 // 静默释放：调后端释放 + 断连清理，供手动释放与空闲释放复用
 const teardownAndRelease = async () => {
   if (!deviceId.value) return false
@@ -1021,7 +968,6 @@ const handleWindowResize = () => {
 
 // ========== 元素检查器功能 ==========
 
-// 连接元素检查器 WebSocket
 const connectInspectorWebSocket = () => {
   return new Promise((resolve, reject) => {
     const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/inspector`
@@ -1052,7 +998,6 @@ const connectInspectorWebSocket = () => {
   })
 }
 
-// 处理检查器消息
 const handleInspectorMessage = (data) => {
   switch (data.type) {
     case 'connected':
@@ -1060,13 +1005,11 @@ const handleInspectorMessage = (data) => {
       break
     case 'ui_hierarchy':
     case 'xml_only':
-      // 处理 XML 内容
       if (data.success && data.data && data.data.xml) {
         decompressXml(data.data).then(xmlContent => {
           const currentXmlHash = generateXmlHash(xmlContent)
           if (currentXmlHash && currentXmlHash !== lastXmlHash.value) {
             lastXmlHash.value = currentXmlHash
-            // 解析 XML 为树结构
             const tree = parseIOSXml(xmlContent)
             if (tree) {
               uiHierarchy.value = tree
@@ -1083,11 +1026,9 @@ const handleInspectorMessage = (data) => {
   }
 }
 
-// 切换元素检查器
 const toggleElementInspector = async () => {
   elementInspectorEnabled.value = !elementInspectorEnabled.value
   if (elementInspectorEnabled.value) {
-    // 开启时连接 inspector WebSocket
     if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
       try {
         await connectInspectorWebSocket()
@@ -1102,7 +1043,6 @@ const toggleElementInspector = async () => {
       refreshUIHierarchy()
     }
   } else {
-    // 关闭时清理状态并断开连接
     hoverElement.value = null
     uiHierarchy.value = null
     if (inspectorWs) {
@@ -1112,13 +1052,11 @@ const toggleElementInspector = async () => {
   }
 }
 
-// 刷新 UI 层次结构
 const refreshUIHierarchy = () => {
   if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) return
   inspectorWs.send(JSON.stringify({ type: 'get_xml_only' }))
 }
 
-// 解压缩 XML 数据
 const decompressXml = async (data) => {
   if (!data || !data.xml) {
     throw new Error('无效的 XML 数据')
@@ -1155,7 +1093,6 @@ const generateXmlHash = (xmlString) => {
   return hash.toString()
 }
 
-// 解析 iOS XML 为树结构
 const parseIOSXml = (xmlString) => {
   try {
     const parser = new DOMParser()
@@ -1175,7 +1112,6 @@ const parseIOSXml = (xmlString) => {
   }
 }
 
-// 递归解析 XML 节点
 const parseXmlNode = (node) => {
   if (!node || node.nodeType !== 1) return null
 
@@ -1193,14 +1129,12 @@ const parseXmlNode = (node) => {
     children: []
   }
 
-  // 计算边界字符串
   const x = parseInt(element.x)
   const y = parseInt(element.y)
   const w = parseInt(element.width)
   const h = parseInt(element.height)
   element.rect = `[${x},${y}][${x + w},${y + h}]`
 
-  // 解析子节点
   for (let i = 0; i < node.children.length; i++) {
     const child = parseXmlNode(node.children[i])
     if (child) {
@@ -1211,7 +1145,6 @@ const parseXmlNode = (node) => {
   return element
 }
 
-// 查找指定坐标的元素
 const findElementAtPosition = (x, y) => {
   if (!uiHierarchy.value) return null
 
@@ -1220,7 +1153,6 @@ const findElementAtPosition = (x, y) => {
   return element
 }
 
-// 递归查找最小匹配元素
 const findSmallestElementAt = (node, x, y) => {
   if (!node) return null
 
@@ -1228,7 +1160,6 @@ const findSmallestElementAt = (node, x, y) => {
 
   if (allMatches.length === 0) return null
 
-  // 找到面积最小的元素
   let bestMatch = allMatches[0]
   let minArea = bestMatch.area
 
@@ -1242,7 +1173,6 @@ const findSmallestElementAt = (node, x, y) => {
   return bestMatch.element
 }
 
-// 收集所有匹配的元素
 const collectAllMatchingElements = (node, x, y, matches = []) => {
   if (!node) return matches
 
@@ -1251,14 +1181,12 @@ const collectAllMatchingElements = (node, x, y, matches = []) => {
   const nw = parseInt(node.width)
   const nh = parseInt(node.height)
 
-  // 检查点是否在元素内
   if (x >= nx && x <= nx + nw && y >= ny && y <= ny + nh) {
     matches.push({
       element: node,
       area: nw * nh
     })
 
-    // 继续查找子节点
     if (node.children && node.children.length > 0) {
       for (const child of node.children) {
         collectAllMatchingElements(child, x, y, matches)
@@ -1269,26 +1197,22 @@ const collectAllMatchingElements = (node, x, y, matches = []) => {
   return matches
 }
 
-// 添加操作日志
 const addOperationLog = (action, data) => {
   operationLogs.value.unshift({
     action,
     ...data
   })
 
-  // 限制日志数量
   if (operationLogs.value.length > 5) {
     operationLogs.value = operationLogs.value.slice(0, 5)
   }
 }
 
-// 清空操作日志
 const clearOperationLogs = () => {
   operationLogs.value = []
   ElMessage.success('操作日志已清空')
 }
 
-// 格式化时间
 const formatTime = (timestamp) => {
   const date = new Date(timestamp)
   const hours = String(date.getHours()).padStart(2, '0')
@@ -1297,7 +1221,6 @@ const formatTime = (timestamp) => {
   return `${hours}:${minutes}:${seconds}`
 }
 
-// 复制到剪贴板
 const copyToClipboard = (text, label) => {
   navigator.clipboard.writeText(text).then(() => {
     ElMessage.success(`${label}已复制`)
@@ -1306,7 +1229,6 @@ const copyToClipboard = (text, label) => {
   })
 }
 
-// 调度 XML 检查
 const scheduleXmlCheck = (delay = 300) => {
   if (!elementInspectorEnabled.value) return
 
@@ -1408,7 +1330,6 @@ onMounted(async () => {
     return
   }
 
-  // 启动占用心跳续约
   if (deviceSerial.value) {
     startHoldHeartbeat()
   }

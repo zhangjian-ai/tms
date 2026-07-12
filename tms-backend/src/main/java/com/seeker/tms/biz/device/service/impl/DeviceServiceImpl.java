@@ -38,7 +38,6 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
 
     @Override
     public PageResult<DeviceVO> deviceList(DeviceQueryDTO deviceQueryDTO) {
-        // 分页器
         Page<DevicePO> page = Page.of(deviceQueryDTO.getPageNo(), deviceQueryDTO.getPageSize());
 
         if (StrUtil.isNotBlank(deviceQueryDTO.getSortBy())) {
@@ -47,7 +46,6 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
             page.addOrder(new OrderItem("update_time", deviceQueryDTO.isAsc()));
         }
 
-        // 条件查询
         this.lambdaQuery()
                 .like(StrUtil.isNotBlank(deviceQueryDTO.getName()), DevicePO::getName, deviceQueryDTO.getName())
                 .eq(StrUtil.isNotBlank(deviceQueryDTO.getSerial()), DevicePO::getSerial, deviceQueryDTO.getSerial())
@@ -56,13 +54,11 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
                 .eq(StrUtil.isNotBlank(deviceQueryDTO.getOsVersion()), DevicePO::getOsVersion, deviceQueryDTO.getOsVersion())
                 .page(page);
 
-        // 构建响应数据
         PageResult<DeviceVO> devicePoPageResult = new PageResult<>();
         devicePoPageResult.setTotal((int) page.getTotal());
         devicePoPageResult.setPageNo((int) page.getCurrent());
         devicePoPageResult.setPageCount((int) page.getPages());
 
-        // 所有记录
         List<DevicePO> devicePOS = page.getRecords();
 
         // 动态更新设备在前端的展示状态
@@ -70,7 +66,6 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
         for (DevicePO devicePo : devicePOS) {
             DeviceVO deviceVO = BeanUtil.copyProperties(devicePo, DeviceVO.class);
 
-            // 获取设备实时状态
             Object status = redisTemplate.opsForValue().get(redisConfig.getStatusPrefix() + devicePo.getSerial());
             Object holder = redisTemplate.opsForValue().get(redisConfig.getHolderPrefix() + devicePo.getSerial());
 
@@ -96,7 +91,6 @@ public class DeviceServiceImpl extends ServiceImpl<DeviceMapper, DevicePO> imple
 
     @Override
     public DevicePO detailById(Integer id) {
-        // 跟id查询数据
         DevicePO devicePo = this.getById(id);
 
         if (devicePo == null) {

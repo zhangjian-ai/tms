@@ -52,7 +52,6 @@ export default {
     // 不写入 store/Redis，纯本地 UI 行为
     let collapseAllCasesFlag = false
 
-    // 优先级配置
     const PRIORITY_CONFIG = {
       'priority-1': { label: 'P0', color: '#f56c6c', number: '0' },
       'priority-2': { label: 'P1', color: '#f78989', number: '1' },
@@ -313,7 +312,6 @@ export default {
 
       mind.init(data)
 
-      // 渲染完成后插入优先级徽章
       setTimeout(function() {
         renderPriorityBadges()
       }, 0)
@@ -326,7 +324,6 @@ export default {
       // 拦截正在生成测试点的右键菜单
       container.value.addEventListener('contextmenu', function(e) {
         var target = e.target
-        // 向上查找到 me-tpc 节点元素
         while (target && target.tagName !== 'ME-TPC') {
           target = target.parentElement
           if (!target || target === container.value) break
@@ -397,7 +394,6 @@ export default {
           customItems.forEach(function(item) { menu.appendChild(item) })
           nativeItems.forEach(function(item) { menu.appendChild(item) })
 
-          // 控制菜单项可见性
           menuItems.forEach(function(li) {
             var text = li.querySelector('span')?.textContent
             if (text === '生成用例') {
@@ -430,10 +426,8 @@ export default {
         }, 10)
       })
 
-      // 监听节点操作
       mind.bus.addListener('operation', function(operation) {
         if (operation && operation.name === 'beginEdit') {
-          // 如果是正在生成的测试点，阻止编辑
           if (operation.obj && operation.obj.nodeType === 'point' &&
               props.generatingPointIds && props.generatingPointIds.has(operation.obj.id)) {
             var inputBox = document.getElementById('input-box')
@@ -495,7 +489,6 @@ export default {
       // 只有自由节点可以设置类型
       if (nodeObj.nodeType !== 'free') return false
 
-      // 根据父节点类型判断
       var parentType = findParentType(nodeObj.id)
 
       if (targetType === 'case') {
@@ -535,7 +528,6 @@ export default {
         tpcEl.style.color = isFree ? '#333' : '#fff'
       }
 
-      // 重新渲染徽章
       renderPriorityBadges()
 
       emitUpdate()
@@ -596,13 +588,11 @@ export default {
     function renderPriorityBadges() {
       if (!mind || !container.value) return
 
-      // 清理已有徽章
       container.value.querySelectorAll('.priority-badge').forEach(function(badge) {
         badge.remove()
       })
-      // 清理 flex 标记并解包装：把 .me-tpc-content 内的子节点放回 me-tpc
-      // 注意：Mind Elixir 选中节点时会用 className = "selected" 整体覆盖 class，
-      // 所以这里改用 data-attribute 做标记，避免被覆盖
+      // 清理 flex 标记并解包装：把 .me-tpc-content 内的子节点放回 me-tpc。
+      // 用 data-attribute 而非 class 做标记，避免被 Mind Elixir 选中时的 className 重置覆盖
       container.value.querySelectorAll('me-tpc[data-has-priority-badge]').forEach(function(tpc) {
         tpc.removeAttribute('data-has-priority-badge')
         var wrapper = tpc.querySelector(':scope > .me-tpc-content')
@@ -701,11 +691,9 @@ export default {
     }
 
     function showPrioritySelector(badgeEl, nodeId, currentPriority) {
-      // 移除已存在的选择器
       var existingSelector = document.querySelector('.priority-selector')
       if (existingSelector) existingSelector.remove()
 
-      // 创建选择器
       var selector = document.createElement('div')
       selector.className = 'priority-selector'
       selector.style.cssText = 'position: absolute; background: #fff; border: 1px solid #dcdfe6; ' +
@@ -749,7 +737,6 @@ export default {
         selector.appendChild(item)
       })
 
-      // 定位选择器
       var rect = badgeEl.getBoundingClientRect()
       selector.style.left = rect.left + 'px'
       selector.style.top = (rect.bottom + 4) + 'px'
@@ -774,10 +761,8 @@ export default {
       var nodeData = mind.getObjById(nodeId, mind.nodeData)
       if (!nodeData) return
 
-      // 更新节点的优先级数据
       nodeData.priority = newPriority
 
-      // 重新渲染徽章
       renderPriorityBadges()
 
       emitUpdate()
@@ -843,18 +828,15 @@ export default {
     function updatePointCases(pointId, cases) {
       if (!mind) return
 
-      // 找到测试点节点数据
       var pointNodeData = mind.getObjById(pointId, mind.nodeData)
       if (!pointNodeData) return
 
-      // 更新子节点（用例列表）
       pointNodeData.children = cases.map(function(c) { return toME(c, false) })
 
       // 局部重新布局和渲染连接线，不触发全量刷新
       mind.layout()
       mind.linkDiv()
 
-      // 重新渲染优先级徽章
       setTimeout(function() {
         renderPriorityBadges()
         syncLoadingStates()
@@ -923,7 +905,6 @@ export default {
     })
 
     onUnmounted(function() {
-      // 清理工作
     })
 
     return {

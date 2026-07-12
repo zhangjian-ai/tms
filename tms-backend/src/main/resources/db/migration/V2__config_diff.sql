@@ -1,5 +1,6 @@
 -- =============================================
--- V3: 配置对比(confdiff)相关表
+-- V2: 配置对比(confdiff)
+--   机器(SSH 连接) + 项目(git 仓库 + 配置路径)。含默认示例数据，请按需修改连接信息。
 -- =============================================
 
 -- 配置对比-机器表
@@ -37,15 +38,15 @@ CREATE TABLE IF NOT EXISTS `config_compare_project` (
     CONSTRAINT `fk_ccp_machine` FOREIGN KEY (`machine_id`) REFERENCES `config_compare_machine` (`id`) ON UPDATE CASCADE ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='配置对比-项目表';
 
--- 默认机器配置(示例,请按需修改连接信息)
-INSERT INTO `config_compare_machine`
-    (`name`, `host`, `port`, `username`, `auth_type`, `password`, `work_dir`, `remark`)
-VALUES
-    ('默认配置机器', '192.168.1.100', 22, 'deploy', 'password', 'CHANGE_ME', '/data/confdiff/repos', '默认示例机器,请按需修改');
-
--- 默认项目配置(示例)
-INSERT INTO `config_compare_project`
-    (`machine_id`, `name`, `repo_url`, `config_paths`, `default_branch`, `remark`)
-VALUES
-    ((SELECT id FROM `config_compare_machine` WHERE `host` = '192.168.1.100' AND `port` = 22 AND `username` = 'deploy'),
-     'demo-config', 'git@gitlab.example.com:ops/demo-config.git', 'config,env/excel', 'master', '默认示例项目');
+-- -- 默认机器配置(示例,请按需修改连接信息)
+-- INSERT INTO `config_compare_machine`
+--     (`name`, `host`, `port`, `username`, `auth_type`, `password`, `work_dir`, `remark`)
+-- VALUES
+--     ('默认配置机器', '192.168.1.100', 22, 'deploy', 'password', 'CHANGE_ME', '/data/confdiff/repos', '默认示例机器,请按需修改');
+--
+-- -- 默认项目配置(示例)
+-- INSERT INTO `config_compare_project`
+--     (`machine_id`, `name`, `repo_url`, `config_paths`, `default_branch`, `remark`)
+-- VALUES
+--     ((SELECT id FROM `config_compare_machine` WHERE `host` = '192.168.1.100' AND `port` = 22 AND `username` = 'deploy'),
+--      'demo-config', 'git@gitlab.example.com:ops/demo-config.git', 'config,env/excel', 'master', '默认示例项目');

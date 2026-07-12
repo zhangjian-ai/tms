@@ -314,7 +314,6 @@ import pako from 'pako'
 import { ScrcpyController, Action } from '@/utils/device'
 import config from '@/config/index.js'
 
-// 生成会话令牌
 const genSessionId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID()
@@ -346,8 +345,7 @@ export default {
     // 设备占用心跳
     let holdWs = null
     let holdHeartbeatTimer = null
-    
-    // 响应式数据
+
     const loading = ref(false)
     const connecting = ref(false)
     const isConnected = ref(false)
@@ -355,34 +353,31 @@ export default {
     const deviceName = ref(route.query.name || '未知设备')
     const screenVideo = ref(null)
 
-    // 触控状态管理
     let isMouseDown = false
     let startCoords = null
     let lastMoveTime = 0
     let touchAction = null
     let hasDragged = false
     const dragThreshold = 10
-    
-    // 视频分辨率相关
+
     const videoResolution = reactive({
       width: 0,
       height: 0,
       aspectRatio: 16/9 // 默认比例
     })
-    
+
     // 设备真实窗口尺寸
     const deviceWindowSize = reactive({
       width: 0,
       height: 0
     })
-    
+
     // 连接信息
     const connectionInfo = reactive({
-      // 设备基本信息（用于显示）
       id: route.params.id,
       deviceName: route.query.name,
       serial: route.query.serial || '',
-      
+
       // 连接配置
       adbHost: '',
       adbPort: '',
@@ -391,16 +386,13 @@ export default {
       connection: '',
     })
     
-    // WebSocket连接
     let scrcpyWs = null  // 投屏WebSocket
     let controlWs = null // 控制WebSocket
     let inspectorWs = null // 元素检查器WebSocket
     let jmu = null
-    
-    // scrcpy 设备控制器
+
     const scrcpy = new ScrcpyController()
-    
-    // 元素检查器相关状态
+
     const elementInspectorEnabled = ref(false)
     const operationLogs = ref([])       // 操作日志记录
     const selectedElement = ref(null)   // 点击选中的元素
@@ -409,8 +401,7 @@ export default {
     const uiHierarchy = ref(null)       // UI层次结构数据
     const lastXmlHash = ref('')         // 上次XML内容哈希
     let xmlChangeTimer = null           // XML变化检测定时器
-    
-    // 获取连接信息
+
     const getConnectionInfo = async () => {
       try {
         const response = await deviceApi.getDeviceConnection(route.params.id)
@@ -448,7 +439,6 @@ export default {
       }
     }
 
-    // 释放设备
     // 静默释放：调后端释放 + 断连清理，供手动释放与空闲释放复用
     const teardownAndRelease = async () => {
       const res = await deviceApi.deviceHold({
@@ -461,7 +451,6 @@ export default {
         return false
       }
       deviceSessionStore.clearSession(route.params.id)
-      // 关连接、停心跳、清定时器与各状态
       disconnectWebSocket()
       stopHoldHeartbeat()
       if (resizeTimer) {
@@ -516,7 +505,6 @@ export default {
       onReleased: () => router.push({ name: 'Devices' })
     })
 
-    // 连接WebSocket
     const connectWebSocket = () => {
       if (!connectionInfo.proxyHost || !connectionInfo.proxyPort || !connectionInfo.serial) {
         ElMessage.error('连接信息不完整，无法建立连接')
@@ -525,21 +513,17 @@ export default {
       
       connecting.value = true
       wsStatus.value = 'connecting'
-      
-      // 同时建立投屏和控制连接
+
       connectScrcpyWebSocket()
       connectControlWebSocket()
-      
-      // 如果元素检查器启用，也连接检查器WebSocket
+
       if (elementInspectorEnabled.value) {
         connectInspectorWebSocket()
       }
     }
 
-    // 连接投屏WebSocket
     const connectScrcpyWebSocket = () => {
       try {
-        // 构建投屏WebSocket URL
         const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/scrcpy`
         scrcpyWs = new WebSocket(wsUrl)
         scrcpyWs.binaryType = 'arraybuffer'
@@ -551,12 +535,10 @@ export default {
           connecting.value = false
           ElMessage.success('投屏连接成功')
 
-          // 初始化JMuxer
           nextTick(() => {
             initMirrorDisplay()
           })
-          
-          // 发送开始投屏消息
+
           scrcpyWs.send(JSON.stringify({
             type: 'start_stream'
           }))
@@ -581,10 +563,8 @@ export default {
       }
     }
     
-    // 连接控制WebSocket
     const connectControlWebSocket = () => {
       try {
-        // 构建控制WebSocket URL
         const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/control`
 
         controlWs = new WebSocket(wsUrl)
@@ -611,18 +591,15 @@ export default {
       }
     }
     
-    // 连接元素检查器WebSocket
     const connectInspectorWebSocket = () => {
       try {
-        // 构建检查器WebSocket URL
         const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/inspector`
 
         inspectorWs = new WebSocket(wsUrl)
-        
+
         inspectorWs.onopen = () => {
-          // 元素检查器连接成功
         }
-        
+
         inspectorWs.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data)
@@ -631,9 +608,8 @@ export default {
             console.error('检查器消息解析失败', error)
           }
         }
-        
+
         inspectorWs.onclose = () => {
-          // 元素检查器连接关闭
         }
         
         inspectorWs.onerror = (error) => {
@@ -645,9 +621,7 @@ export default {
       }
     }
     
-    // 断开WebSocket
     const disconnectWebSocket = () => {
-      // 断开投屏WebSocket
       if (scrcpyWs) {
         try {
           if (scrcpyWs.readyState === WebSocket.OPEN || scrcpyWs.readyState === WebSocket.CONNECTING) {
@@ -659,8 +633,7 @@ export default {
         scrcpyWs = null
         scrcpy.unbind()
       }
-      
-      // 断开控制WebSocket
+
       if (controlWs) {
         try {
           if (controlWs.readyState === WebSocket.OPEN || controlWs.readyState === WebSocket.CONNECTING) {
@@ -671,8 +644,7 @@ export default {
         }
         controlWs = null
       }
-      
-      // 断开检查器WebSocket
+
       if (inspectorWs) {
         try {
           if (inspectorWs.readyState === WebSocket.OPEN || inspectorWs.readyState === WebSocket.CONNECTING) {
@@ -683,8 +655,7 @@ export default {
         }
         inspectorWs = null
       }
-      
-      // 清理视频相关资源
+
       try {
         if (jmu) {
           jmu.destroy()
@@ -697,8 +668,7 @@ export default {
       } catch (error) {
         console.error('清理视频资源失败:', error)
       }
-      
-      // 重置状态
+
       isMouseDown = false
       isConnected.value = false
       wsStatus.value = 'disconnected'
@@ -706,7 +676,6 @@ export default {
       console.log('所有WebSocket连接已断开')
     }
     
-    // 处理投屏WebSocket消息
     const handleWebSocketMessage = (message) => {
       switch (message.type) {
         case 'connected':
@@ -744,12 +713,10 @@ export default {
     const handleInspectorMessage = (message) => {
       switch (message.type) {
         case 'connected':
-          // 确保设备分辨率信息同步
           if (message.device_resolution) {
             deviceWindowSize.width = message.device_resolution[0]
             deviceWindowSize.height = message.device_resolution[1]
           }
-          // 连接成功后立即获取UI层次
           refreshUIHierarchy()
           break
         case 'ui_hierarchy':
@@ -762,11 +729,9 @@ export default {
               } else {
                 hierarchyData = message.data
               }
-              
-              // 提取树结构数据
+
               uiHierarchy.value = hierarchyData.tree || hierarchyData
-              
-              // 更新XML哈希
+
               if (hierarchyData.xml) {
                 const newXmlHash = generateXmlHash(hierarchyData.xml)
                 lastXmlHash.value = newXmlHash
@@ -793,7 +758,6 @@ export default {
       }
     }
     
-    // 处理控制WebSocket消息
     const handleControlMessage = (message) => {
       switch (message.type) {
         case 'connected':
@@ -805,7 +769,6 @@ export default {
         case 'screenshot_result':
           if (message.success && message.data) {
             try {
-              // 创建下载链接
               const link = document.createElement('a')
               link.download = `screenshot_${connectionInfo.serial}_${Date.now()}.png`
               link.href = `data:image/png;base64,${message.data.image}`
@@ -822,17 +785,14 @@ export default {
           break
         case 'dump_hierarchy_result':
           if (message.success && message.data) {
-            // 使用统一的解压缩函数
             try {
-              // 构造标准的XML数据格式
               const xmlData = {
                 xml: message.data.hierarchy,
                 compressed: message.data.compressed,
                 encoding: message.data.encoding
               }
-              
+
               decompressXml(xmlData).then(xmlContent => {
-                // 创建下载链接
                 const blob = new Blob([xmlContent], { type: 'application/xml; charset=utf-8' })
                 const url = window.URL.createObjectURL(blob)
                 
@@ -858,16 +818,12 @@ export default {
         case 'xml_only':
           // 处理仅XML内容的响应（用于页面变化检测）
           if (message.success && message.data && message.data.xml) {
-            // 解压缩XML数据
             decompressXml(message.data).then(xmlContent => {
-              // 如果正在进行稳定性检测，优先处理稳定性检测
               if (stabilityCheckTimer !== null || stabilityCheckCount > 0) {
                 handleStabilityXmlResponse(xmlContent)
               } else {
-                // 普通的XML变化检测
                 const currentXmlHash = generateXmlHash(xmlContent)
                 if (currentXmlHash && currentXmlHash !== lastXmlHash.value) {
-                  // XML发生变化，刷新完整的UI层次
                   refreshUIHierarchy()
                 }
               }
@@ -884,10 +840,8 @@ export default {
       }
     }
     
-    // 初始化投屏显示
     const initMirrorDisplay = () => {
       try {
-        // 设置投屏WebSocket的onmessage处理
         if (scrcpyWs) {
           scrcpyWs.onmessage = (event) => {
             if (event.data instanceof ArrayBuffer) {
@@ -913,11 +867,9 @@ export default {
                   }
                 })
               }
-              // 处理视频数据
               jmu.feed({ video: new Uint8Array(event.data) })
             }
         else {
-              // 处理文本消息
               try {
                 const message = JSON.parse(event.data)
                 handleWebSocketMessage(message)
@@ -998,21 +950,18 @@ export default {
       let clientX, clientY
       
       if (event.touches && event.touches.length > 0) {
-        // 触摸事件
         clientX = event.touches[0].clientX
         clientY = event.touches[0].clientY
       } else {
-        // 鼠标事件
         clientX = event.clientX
         clientY = event.clientY
       }
-      
+
       const relativeX = clientX - rect.left
       const relativeY = clientY - rect.top
       const displayWidth = rect.width
       const displayHeight = rect.height
-      
-      // 边界检查
+
       if (relativeX < 0 || relativeY < 0 || relativeX > displayWidth || relativeY > displayHeight) {
         return null
       }
@@ -1025,7 +974,6 @@ export default {
       }
     }
     
-    // 发送控制消息
     const sendControlMessage = (message) => {
       if (controlWs && controlWs.readyState === WebSocket.OPEN) {
         controlWs.send(JSON.stringify(message))
@@ -1106,7 +1054,6 @@ export default {
       touchAction = null
     }
     
-    // 记录滑动操作日志
     const logSwipeEvent = (startCoords, endCoords) => {
       if (!elementInspectorEnabled.value) return
       const startOc = toOriginalDeviceCoords(startCoords)
@@ -1151,7 +1098,6 @@ export default {
     // 处理鼠标/触摸移动 - 拖拽时实时发送ACTION_MOVE
     const handleScreenMouseMove = (event) => {
 
-      // 未按下且启用元素检查器时进行元素查找
       if (!isMouseDown && elementInspectorEnabled.value && !connecting.value) {
         const coords = getTouchCoordinates(event)
 
@@ -1191,8 +1137,7 @@ export default {
           startCoords.isDragging = true
         }
       }
-      
-      // 实时发送ACTION_MOVE到设备
+
       sendScrcpyTouch(Action.MOVE, coords)
     }
     
@@ -1204,8 +1149,7 @@ export default {
       const coords = getTouchCoordinates(event)
       
       isMouseDown = false
-      
-      // 发送ACTION_UP
+
       if (coords) {
         sendScrcpyTouch(Action.UP, coords)
       } else if (startCoords) {
@@ -1222,7 +1166,6 @@ export default {
       startCoords = null
     }
     
-    // 处理屏幕鼠标离开
     const handleScreenMouseLeave = () => {
       if (elementInspectorEnabled.value) {
         isHovering.value = false
@@ -1242,25 +1185,21 @@ export default {
       scrcpy.scroll(dc.x, dc.y, hScroll, vScroll)
     }
     
-    // 处理触摸开始
     const handleScreenTouchStart = (event) => {
       event.preventDefault() // 防止滚动
       handleScreenMouseDown(event)
     }
-    
-    // 处理触摸移动
+
     const handleScreenTouchMove = (event) => {
       event.preventDefault() // 防止滚动
       handleScreenMouseMove(event)
     }
-    
-    // 处理触摸结束
+
     const handleScreenTouchEnd = (event) => {
       event.preventDefault()
       handleScreenMouseUp(event)
     }
-    
-    // HOME键
+
     const handleHomeKey = () => {
       scrcpy.pressHome()
       
@@ -1273,26 +1212,22 @@ export default {
       }
     }
     
-    // 唤醒屏幕
     const handleWakeScreen = () => {
       scrcpy.pressPower()
     }
-    
-    // 截图
+
     const handleScreenshot = () => {
       sendControlMessage({
         type: 'screenshot'
       })
     }
-    
-    // Dump XML
+
     const handleDumpXml = () => {
       sendControlMessage({
         type: 'dump_hierarchy'
       })
     }
-    
-    // 获取调试命令
+
     const getDebugCommand = () => {
       if (connectionInfo.adbHost && connectionInfo.adbPort && connectionInfo.serial) {
         return `adb -H ${connectionInfo.adbHost} -P ${connectionInfo.adbPort} -s ${connectionInfo.serial} shell`
@@ -1300,7 +1235,6 @@ export default {
       return '-'
     }
     
-    // 复制调试命令
     const copyCommand = () => {
       const command = getDebugCommand()
       if (command !== '-') {
@@ -1312,7 +1246,6 @@ export default {
       }
     }
     
-    // 复制连接命令
     const copyConnectionCommand = () => {
       const command = connectionInfo.connection ? `adb connect ${connectionInfo.connection}` : '-'
       if (command !== '-') {
@@ -1324,15 +1257,13 @@ export default {
       }
     }
     
-    // 防抖定时器
     let resizeTimer = null
-    
-    // 窗口大小变化处理（防抖）
+
     const handleWindowResize = () => {
       if (resizeTimer) {
         clearTimeout(resizeTimer)
       }
-      
+
       resizeTimer = setTimeout(() => {
         if (videoResolution.width && videoResolution.height) {
           nextTick(() => {
@@ -1343,25 +1274,19 @@ export default {
     }
     
     // ============= 元素检查器相关函数 =============
-    
-    // 切换元素检查器
+
     const toggleElementInspector = () => {
       elementInspectorEnabled.value = !elementInspectorEnabled.value
-      
+
       if (elementInspectorEnabled.value && connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
-        // 启用检查器时建立WebSocket连接
         connectInspectorWebSocket()
-        // 开始XML变化检测
         startXmlChangeDetection()
       } else if (!elementInspectorEnabled.value) {
-        // 关闭检查器时断开连接
         if (inspectorWs) {
           inspectorWs.close()
           inspectorWs = null
         }
-        // 停止XML变化检测
         stopXmlChangeDetection()
-        // 清理状态
         selectedElement.value = null
         hoverElement.value = null
         uiHierarchy.value = null
@@ -1377,7 +1302,6 @@ export default {
       }
 
       try {
-        // 发送获取UI层次的请求
         inspectorWs.send(JSON.stringify({
           type: 'get_ui_hierarchy'
         }))
@@ -1386,14 +1310,13 @@ export default {
       }
     }
 
-    // 解析bounds字符串为数值
     const parseBounds = (boundsStr) => {
       if (!boundsStr) return null
-      
+
       // 格式: [left,top][right,bottom]
       const match = boundsStr.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/)
       if (!match) return null
-      
+
       return {
         left: parseInt(match[1]),
         top: parseInt(match[2]),
@@ -1402,32 +1325,28 @@ export default {
       }
     }
 
-    // 检查点是否在bounds内
     const isPointInBounds = (x, y, bounds) => {
       if (!bounds) return false
       // 严格边界检测
       return x > bounds.left && x < bounds.right && y > bounds.top && y < bounds.bottom
     }
 
-    // 计算元素面积
     const calculateArea = (bounds) => {
       if (!bounds) return Infinity
       return (bounds.right - bounds.left) * (bounds.bottom - bounds.top)
     }
 
-    // 收集所有匹配的元素
     const collectAllMatchingElements = (node, x, y, matches = []) => {
       if (!node) {
         return matches
       }
-      
+
       const bounds = parseBounds(node.bounds)
       if (!bounds) {
         return matches
       }
-      
+
       if (isPointInBounds(x, y, bounds)) {
-        // 点到边界中心的距离
         const centerX = (bounds.left + bounds.right) / 2
         const centerY = (bounds.top + bounds.bottom) / 2
         const distanceToCenter = Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2))
@@ -1441,45 +1360,40 @@ export default {
           relativeX: (x - bounds.left) / (bounds.right - bounds.left),
           relativeY: (y - bounds.top) / (bounds.bottom - bounds.top)
         })
-        
-        // 继续查找子节点
+
         if (node.children && node.children.length > 0) {
           for (const child of node.children) {
             collectAllMatchingElements(child, x, y, matches)
           }
         }
       }
-      
+
       return matches
     }
 
-    // 递归查找最精确匹配元素
     const findSmallestElementAt = (node, x, y) => {
-      // 收集所有匹配的元素
       const allMatches = collectAllMatchingElements(node, x, y)
-      
+
       if (allMatches.length === 0) {
         return null
       }
-      
-      // 多重筛选条件找到最合适的元素
+
       let bestMatch = null
       let bestScore = -1
-      
+
       for (const match of allMatches) {
         const element = match.element
         const area = match.area
         const distanceToCenter = match.distanceToCenter
         const relativeX = match.relativeX
         const relativeY = match.relativeY
-        
-        // 计算元素的优先级分数
+
         let score = 0
-        
+
         // 1. 面积越小，分数越高（主要条件）
         const maxArea = Math.max(...allMatches.map(m => m.area))
         score += (maxArea - area) / maxArea * 1000
-        
+
         // 越接近元素中心分数越高
         const maxDistance = Math.max(...allMatches.map(m => m.distanceToCenter))
         if (maxDistance > 0) {
@@ -1490,22 +1404,22 @@ export default {
         if (relativeX >= 0.2 && relativeX <= 0.8 && relativeY >= 0.2 && relativeY <= 0.8) {
           score += 150 // 在中心80%区域内
         }
-        
+
         // 2. 可点击元素优先级更高
         if (element.clickable === 'true') {
           score += 500
         }
-        
+
         // 3. 有文本内容的元素优先级更高
         if (element.text && element.text.trim().length > 0) {
           score += 300
         }
-        
+
         // 4. 有资源ID的元素优先级更高
         if (element.resource_id && element.resource_id.trim().length > 0) {
           score += 200
         }
-        
+
         // 5. 启用状态的元素优先级更高
         if (element.enabled === 'true') {
           score += 100
@@ -1544,74 +1458,67 @@ export default {
       return bestMatch ? bestMatch.element : allMatches[0].element
     }
 
-    // 真实元素查找
     const findElementAtPosition = (x, y) => {
       if (!uiHierarchy.value) {
-        // 如果没有UI层次数据，先获取
         refreshUIHierarchy()
         return null
       }
-      
-      // 在UI层次中查找匹配的元素
+
       let foundElement = findSmallestElementAt(uiHierarchy.value, x, y)
-      
+
       // 如果根节点没有找到匹配，尝试直接在子节点中查找
       if (!foundElement && uiHierarchy.value.children && uiHierarchy.value.children.length > 0) {
         let smallestElement = null
         let smallestArea = Infinity
-        
+
         for (const child of uiHierarchy.value.children) {
           const childResult = findSmallestElementAt(child, x, y)
           if (childResult) {
             const childBounds = parseBounds(childResult.bounds)
             const childArea = calculateArea(childBounds)
-            
+
             if (childArea < smallestArea) {
               smallestElement = childResult
               smallestArea = childArea
             }
           }
         }
-        
+
         foundElement = smallestElement
       }
-      
+
       if (foundElement) {
-        // 更新hover状态
         hoverElement.value = foundElement
         isHovering.value = true
         return foundElement
       } else {
-        // 清空hover状态
         hoverElement.value = null
         isHovering.value = false
       }
 
       return null
     }
-    
-    
-    // 执行元素操作
+
+
     const performElementAction = (action, text = '') => {
       if (!selectedElement.value || !inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
         ElMessage.error('未选择元素或检查器未连接')
         return
       }
-      
+
       const message = {
         type: 'element_action',
         element: selectedElement.value,
         action: action
       }
-      
+
       if (text) {
         message.text = text
       }
-      
+
       inspectorWs.send(JSON.stringify(message))
     }
-    
-    // 记录操作日志
+
     const addOperationLog = (action, logData) => {
       if (!elementInspectorEnabled.value) return
 
@@ -1632,13 +1539,11 @@ export default {
       }
     }
 
-    // 清空操作日志
     const clearOperationLogs = () => {
       operationLogs.value = []
       ElMessage.success('操作日志已清空')
     }
 
-    // 复制到剪贴板
     const copyToClipboard = async (text, type) => {
       try {
         await navigator.clipboard.writeText(text)
@@ -1663,7 +1568,6 @@ export default {
       }
     }
 
-    // 格式化时间显示
     const formatTime = (date) => {
       return date.toLocaleTimeString('zh-CN', {
         hour12: false,
@@ -1673,16 +1577,15 @@ export default {
       })
     }
 
-    // XML数据解压缩函数
     const decompressXml = async (xmlData) => {
       if (!xmlData?.xml) {
         throw new Error('无效的XML数据')
       }
-      
+
       if (!xmlData.compressed) {
         return xmlData.xml
       }
-      
+
       try {
         const binaryString = atob(xmlData.xml)
         const bytes = new Uint8Array(binaryString.length)
@@ -1696,11 +1599,9 @@ export default {
       }
     }
 
-    // 生成XML内容哈希
     const generateXmlHash = (xmlContent) => {
       if (!xmlContent) return null
-      
-      // 简单的字符串哈希算法
+
       let hash = 0
       for (let i = 0; i < xmlContent.length; i++) {
         const char = xmlContent.charCodeAt(i)
@@ -1712,13 +1613,11 @@ export default {
 
     // 获取当前XML并检测变化
     const checkXmlChange = async () => {
-      // 先检查连接状态
       if (!monitorWebSocketConnection()) {
         return
       }
 
       try {
-        // 使用control WebSocket获取XML
         sendControlMessage({
           type: 'get_xml_only'  // 只获取XML内容，不解析树结构
         })
@@ -1742,43 +1641,39 @@ export default {
     const MAX_STABILITY_CHECKS = 12 // 最大检测次数
     const MAX_XML_RETRY = 3 // 最大重试次数
     const REQUIRED_STABLE_COUNT = 2 // 需要连续稳定的次数
-    
+
     // 等待页面稳定的XML检测（基准XML存储在web端）
     const waitForPageStability = (initialDelay = 1000) => {
-      // 清除之前的稳定性检测
       if (stabilityCheckTimer) {
         clearTimeout(stabilityCheckTimer)
         stabilityCheckTimer = null
       }
-      
-      // 重置检测状态
+
       stabilityCheckCount = 0
       consecutiveStableCount = 0
       xmlRequestRetryCount = 0
-      
+
       // 使用当前的XML hash作为基准（如果存在）
       if (lastXmlHash.value) {
         lastStabilityHash = lastXmlHash.value
-        // 延迟后开始检测
         setTimeout(() => {
           checkPageStability()
         }, initialDelay + 1000)
       } else {
-        // 如果没有基准XML，先获取一次
+        // 没有基准XML时先获取一次
         setTimeout(() => {
           getBaselineXmlForStability()
         }, initialDelay + 1000)
       }
     }
-    
+
     // 获取稳定性检测的基准XML - 仅在没有基准时使用
     const getBaselineXmlForStability = () => {
       try {
-        // 使用control WebSocket获取XML作为基准
         sendControlMessage({
           type: 'get_xml_only'
         })
-        
+
         // 1秒后开始第一次对比检测
         stabilityCheckTimer = setTimeout(() => {
           checkPageStability()

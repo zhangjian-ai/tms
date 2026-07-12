@@ -17,6 +17,15 @@ const routes = [
     }
   },
   {
+    path: '/auth/feishu/callback',
+    name: 'FeishuCallback',
+    component: () => import('@/views/auth/FeishuCallback.vue'),
+    meta: {
+      title: '飞书登录',
+      requiresAuth: false
+    }
+  },
+  {
     path: '/',
     component: MainLayout,
     redirect: '/devices',

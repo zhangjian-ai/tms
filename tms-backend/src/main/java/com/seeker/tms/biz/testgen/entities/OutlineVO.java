@@ -14,16 +14,18 @@ import java.util.List;
 @Data
 public class OutlineVO {
 
-    private List<ModuleNode> modules = new ArrayList<>();
+    private List<Chapter> chapters = new ArrayList<>();
 
     /** 文档总体摘要 */
     private String summary;
 
     @Data
-    public static class ModuleNode {
+    public static class Chapter {
+        /** 章节内部ID：逻辑层用于把测试点关联回所属章节，不下发大模型 */
+        private String id;
         /** 章节名/主题名，与需求文档中的章节标题对应 */
         private String name;
-        /** 该章节的摘要描述（2-4 句话） */
+        /** 该章节的内容摘要（2-4 句话） */
         private String scope;
     }
 }

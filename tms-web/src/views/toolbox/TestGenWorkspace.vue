@@ -42,25 +42,6 @@
         @generate-point="handleGeneratePoint"
       />
     </div>
-
-    <!-- 浮窗对话框：Agent 对话功能暂时隐藏 -->
-    <transition name="slide-fade" v-if="false">
-      <div v-if="chatVisible" class="chat-float-panel">
-        <div class="chat-float-header">
-          <span>小助理</span>
-          <el-button text @click="toggleChat" size="small">
-            <el-icon><Close /></el-icon>
-          </el-button>
-        </div>
-        <div class="chat-float-body">
-          <AgentChatPanel
-            :messages="store.chatMessages"
-            :loading="chatLoading"
-            @send="handleSendMessage"
-          />
-        </div>
-      </div>
-    </transition>
   </div>
 </template>
 
@@ -68,18 +49,17 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, /* ChatDotRound, */ Close } from '@element-plus/icons-vue'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import { useTestGenStore } from '@/stores/testgen'
 import { useUserStore } from '@/stores/user'
 import { testgenApi } from '@/api/testgen'
 import XMindTreePanel from '@/components/testgen/XMindTreePanel.vue'
-import AgentChatPanel from '@/components/testgen/AgentChatPanel.vue'
 import OutlineConfirmPanel from '@/components/testgen/OutlineConfirmPanel.vue'
 import config from '@/config/index.js'
 
 export default {
   name: 'TestGenWorkspace',
-  components: { XMindTreePanel, AgentChatPanel, OutlineConfirmPanel, ArrowLeft, /* ChatDotRound, */ Close },
+  components: { XMindTreePanel, OutlineConfirmPanel, ArrowLeft },
   setup() {
     const route = useRoute()
     const router = useRouter()
@@ -87,8 +67,6 @@ export default {
     const userStore = useUserStore()
     const taskId = route.params.taskId
     const restoring = ref(true)
-    const chatLoading = ref(false)
-    const chatVisible = ref(false)
     const generatingPointIds = ref(new Set())
     const treePanelRef = ref(null)
     const readonly = ref(false)
@@ -147,10 +125,6 @@ export default {
       return ''
     })
 
-    function toggleChat() {
-      chatVisible.value = !chatVisible.value
-    }
-
     async function restore() {
       restoring.value = true
       try {
@@ -163,10 +137,6 @@ export default {
           } else {
             store.setTreeData(res.data.treeData)
           }
-          store.setChatHistory((res.data.chatHistory || []).map(c => ({
-            role: c.role,
-            content: c.content
-          })))
           // 恢复正在生成中的测试点状态
           if (res.data.generatingPointIds && res.data.generatingPointIds.length > 0) {
             generatingPointIds.value = new Set(res.data.generatingPointIds)
@@ -376,11 +346,6 @@ export default {
             }
           }
           break
-        case 'CHAT_RESPONSE':
-          store.addChatMessage({ role: 'assistant', content: msg.data.message })
-          if (msg.data.treeData) store.setTreeData(msg.data.treeData)
-          chatLoading.value = false
-          break
         case 'POINT_CASES_GENERATED':
           if (msg.data.done) {
             var doneSet = new Set(generatingPointIds.value)
@@ -398,7 +363,6 @@ export default {
           break
         case 'ERROR':
           ElMessage.error(msg.data.error || '发生错误')
-          chatLoading.value = false
           if (store.task) store.task.status = 'FAILED'
           break
       }
@@ -483,25 +447,6 @@ export default {
       }
     }
 
-    async function handleSendMessage(message) {
-      if (readonly.value) {
-        ElMessage.warning('当前为只读模式，无法发送消息')
-        return
-      }
-      store.addChatMessage({ role: 'user', content: message })
-      chatLoading.value = true
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'CHAT_MESSAGE',
-          message: message,
-          treeData: store.treeData
-        }))
-      } else {
-        store.addChatMessage({ role: 'assistant', content: 'WebSocket 未连接，请稍后重试' })
-        chatLoading.value = false
-      }
-    }
-
     async function handleFinish() {
       if (readonly.value) {
         ElMessage.warning('当前为只读模式，无法完成任务')
@@ -551,11 +496,11 @@ export default {
     })
 
     return {
-      store, restoring, chatLoading, chatVisible, statusText, statusType,
+      store, restoring, statusText, statusType,
       generatingPointIds, isGeneratingPoints, treePanelRef, readonly,
       outline, outlineConfirming, showOutlinePanel,
       treeDisabled, disabledTip,
-      toggleChat, handleTreeUpdate, handleGeneratePoint, handleSendMessage,
+      handleTreeUpdate, handleGeneratePoint,
       handleFinish, handleConfirmOutline, goBack
     }
   }
@@ -606,50 +551,4 @@ export default {
   display: flex;
 }
 .outline-overlay > * { width: 100%; }
-
-/* 浮窗样式 */
-.chat-float-panel {
-  position: fixed;
-  right: 24px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 420px;
-  height: 600px;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  display: flex;
-  flex-direction: column;
-  z-index: 1000;
-}
-.chat-float-header {
-  height: 48px;
-  padding: 0 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #e6e6e6;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-.chat-float-body {
-  flex: 1;
-  overflow: hidden;
-}
-
-/* 动画 */
-.slide-fade-enter-active {
-  transition: all 0.3s ease-out;
-}
-.slide-fade-leave-active {
-  transition: all 0.2s ease-in;
-}
-.slide-fade-enter-from {
-  transform: translateY(-50%) translateX(100%);
-  opacity: 0;
-}
-.slide-fade-leave-to {
-  transform: translateY(-50%) translateX(100%);
-  opacity: 0;
-}
 </style>

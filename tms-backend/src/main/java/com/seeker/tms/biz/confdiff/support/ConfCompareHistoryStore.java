@@ -43,7 +43,7 @@ public class ConfCompareHistoryStore {
             stringRedisTemplate.opsForList().trim(historyKey, 0, MAX_HISTORY - 1);
             stringRedisTemplate.expire(historyKey, TTL_DAYS, TimeUnit.DAYS);
         } catch (Exception e) {
-            log.error("创建对比历史失败", e);
+            log.error("创建对比历史失败: {}", e.toString());
         }
     }
 
@@ -52,7 +52,7 @@ public class ConfCompareHistoryStore {
         try {
             writeResultAndSummary(result);
         } catch (Exception e) {
-            log.error("更新对比历史失败", e);
+            log.error("更新对比历史失败: {}", e.toString());
         }
     }
 

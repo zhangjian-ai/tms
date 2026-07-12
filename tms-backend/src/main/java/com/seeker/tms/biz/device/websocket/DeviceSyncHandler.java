@@ -115,10 +115,8 @@ public class DeviceSyncHandler extends TextWebSocketHandler {
      */
     @Override
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
-        // 消息体
         JSONObject payload = JSON.parseObject((String) message.getPayload());
 
-        // 根据消息类型处理
         String type = payload.getString("type");
         String serial = payload.getString("serial");
 
@@ -134,7 +132,6 @@ public class DeviceSyncHandler extends TextWebSocketHandler {
             }
         }
 
-        // 查询一下是否是已有设备
         DevicePO devicePo;
 
         switch (type) {
@@ -156,7 +153,6 @@ public class DeviceSyncHandler extends TextWebSocketHandler {
                 JSONObject device_info = payload.getObject("device_info", JSONObject.class);
                 if (device_info == null) break;
 
-                // 查询一下是否是已有设备
                 devicePo = Db.lambdaQuery(DevicePO.class).eq(DevicePO::getSerial, serial).one();
 
                 if (devicePo == null) {

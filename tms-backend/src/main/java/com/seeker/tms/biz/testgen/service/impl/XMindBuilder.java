@@ -30,7 +30,7 @@ public class XMindBuilder {
             }
             return baos.toByteArray();
         } catch (IOException e) {
-            log.error("构建 XMind 文件失败", e);
+            log.error("构建 XMind 文件失败: {}", e.toString());
             throw new RuntimeException("导出 XMind 失败", e);
         }
     }

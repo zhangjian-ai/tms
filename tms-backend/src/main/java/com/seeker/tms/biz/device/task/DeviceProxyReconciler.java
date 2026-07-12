@@ -54,7 +54,7 @@ public class DeviceProxyReconciler {
                 log.info("对账回收：设备 {} 占用已失效，已通知停代理并清理连接信息", serial);
             }
         } catch (Exception e) {
-            log.error("设备代理对账失败", e);
+            log.error("设备代理对账失败: {}", e.toString());
         }
     }
 }

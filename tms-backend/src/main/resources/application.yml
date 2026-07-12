@@ -110,4 +110,13 @@ spring:
 #  secret-key: password
 #  bucket-name: bucket_name
 #  expire: 300
+#
+## 飞书开放平台（自建应用）；app-id/app-secret/redirect-uri 需替换为真实值
+#feishu:
+#  base-url: "https://open.feishu.cn"  # 飞书开放平台的地址
+#  app-id: "cli_xxxx"
+#  app-secret: "xxxx"
+#  redirect-uri: "http://localhost:8080/auth/feishu/callback"  # 前端的回调页面，负责处理带回的state、code去飞书获取token
+#  # 如果要同时获取文档内的图片信息，需要还需要加 drive:drive:readonly
+#  scope: "docx:document:readonly wiki:wiki:readonly wiki:node:read sheets:spreadsheet:readonly"
 

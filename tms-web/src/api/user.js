@@ -1,21 +1,33 @@
 import request from './index'
 
 export const userApi = {
-  // 用户注册
-  signup(data) {
+  getFeishuAuthUrl() {
     return request({
-      url: '/user/user/signup',
+      url: '/user/feishu/authorize-url',
+      method: 'get'
+    })
+  },
+
+  // 飞书扫码登录（回调页用 code + state 换取登录态）
+  feishuLogin(data) {
+    return request({
+      url: '/user/feishu/login',
       method: 'post',
       data
     })
   },
 
-  // 用户登录
-  login(data) {
+  getMe() {
     return request({
-      url: '/user/user/login',
-      method: 'post',
-      data
+      url: '/user/me',
+      method: 'get'
+    })
+  },
+
+  logout() {
+    return request({
+      url: '/user/logout',
+      method: 'post'
     })
   }
 }

@@ -10,16 +10,16 @@
       <el-table-column prop="prdName" label="需求文档" min-width="380" align="left">
         <template #default="{ row }">
           <div
-            v-for="(name, i) in (row.prdName ? row.prdName.split('\n') : [])"
+            v-for="(name, i) in displayDocLines(row)"
             :key="i"
             class="prd-name-line"
             :title="name"
           >{{ name }}</div>
         </template>
       </el-table-column>
-      <el-table-column prop="prdType" label="需求类型" min-width="110" align="center">
+      <el-table-column prop="prdSource" label="需求来源" min-width="110" align="center">
         <template #default="{ row }">
-          <el-tag size="small">{{ prdTypeMap[row.prdType] || row.prdType }}</el-tag>
+          <el-tag size="small" :type="row.prdSource === 'LINK' ? 'warning' : 'success'">{{ prdSourceMap[row.prdSource] || row.prdSource }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="creator" label="创建人" min-width="120" align="center" />
@@ -91,37 +91,81 @@
     <!-- 新建任务对话框 -->
     <el-dialog v-model="createDialogVisible" title="新建用例生成任务" width="520px" :close-on-click-modal="false" class="create-dialog">
       <el-form :model="createForm" label-width="130px" :rules="formRules" ref="formRef">
-        <el-form-item label="需求文档" prop="prdName">
-          <el-upload
-            ref="uploadRef"
-            :action="uploadUrl"
-            multiple
-            :on-success="onUploadSuccess"
-            :on-error="onUploadError"
-            :on-remove="onUploadRemove"
-            :before-upload="beforeUpload"
-            accept=".pdf,.docx,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp"
-            :show-file-list="true"
-          >
-            <el-button type="primary" plain size="default">
-              <el-icon style="margin-right: 4px;"><UploadFilled /></el-icon>
-              选择文件
-            </el-button>
-            <template #tip>
-              <div class="upload-tip">支持 PDF、DOCX、TXT、Markdown 文档，或 PNG、JPG、JPEG、WEBP 图片，可上传多个文件（将整合为一份需求），单个文件最大 100MB</div>
-            </template>
-          </el-upload>
-        </el-form-item>
-        <el-form-item label="需求类型" prop="prdType">
-          <el-radio-group v-model="createForm.prdType">
-            <el-radio-button label="BIZ">业务需求</el-radio-button>
-            <el-radio-button label="BURY">埋点需求</el-radio-button>
-            <el-radio-button label="API">接口需求</el-radio-button>
+        <el-form-item label="需求来源" prop="prdSource">
+          <el-radio-group v-model="createForm.prdSource">
+            <el-radio-button label="LINK">文档链接</el-radio-button>
+            <el-radio-button label="UPLOAD">上传文档</el-radio-button>
           </el-radio-group>
         </el-form-item>
+
+        <!-- 文档链接：单个主文档链接 + 解析二级文档 -->
+        <template v-if="createForm.prdSource === 'LINK'">
+          <el-form-item label="文档链接" prop="prdName">
+            <el-input
+              v-model="linkUrl"
+              placeholder="粘贴一个飞书文档链接（新版文档 docx / 知识库 wiki / 电子表格 sheets）"
+              clearable
+            />
+            <div class="upload-tip">仅填写一个主文档链接，将以你的飞书授权身份读取内容。</div>
+          </el-form-item>
+          <el-form-item label="解析二级文档">
+            <el-switch v-model="createForm.parseSubDoc" />
+            <div class="upload-tip">开启后会提取主文档中直接引用的飞书文档（仅一层），一并抓取并作为关联文档整合。</div>
+          </el-form-item>
+        </template>
+
+        <!-- 上传文档：一个主文档 + 多个关联文档 -->
+        <template v-else>
+          <el-form-item label="主文档" prop="prdName">
+            <el-upload
+              ref="mainUploadRef"
+              :action="uploadUrl"
+              :headers="uploadHeaders"
+              :limit="1"
+              :on-success="onMainSuccess"
+              :on-error="onUploadError"
+              :on-remove="onMainRemove"
+              :on-exceed="onMainExceed"
+              :before-upload="beforeUpload"
+              :accept="acceptExts"
+              :show-file-list="true"
+            >
+              <el-button type="primary" plain size="default">
+                <el-icon style="margin-right: 4px;"><UploadFilled /></el-icon>
+                选择主文档
+              </el-button>
+              <template #tip>
+                <div class="upload-tip">仅一个主文档。支持 PDF、DOCX、TXT、Markdown、表格(XLSX/XLS/CSV) 或图片，单个文件最大 100MB。</div>
+              </template>
+            </el-upload>
+          </el-form-item>
+          <el-form-item label="关联文档">
+            <el-upload
+              ref="relatedUploadRef"
+              :action="uploadUrl"
+              :headers="uploadHeaders"
+              multiple
+              :on-success="onRelatedSuccess"
+              :on-error="onUploadError"
+              :on-remove="onRelatedRemove"
+              :before-upload="beforeUpload"
+              :accept="acceptExts"
+              :show-file-list="true"
+            >
+              <el-button plain size="default">
+                <el-icon style="margin-right: 4px;"><UploadFilled /></el-icon>
+                选择关联文档
+              </el-button>
+              <template #tip>
+                <div class="upload-tip">可多个，含图片、表格等关联材料，将与主文档整合为一份需求。</div>
+              </template>
+            </el-upload>
+          </el-form-item>
+        </template>
+
         <el-form-item label="文档内嵌图片解析" prop="parseImage">
           <el-switch v-model="createForm.parseImage" :disabled="isImageUpload" />
-          <div class="upload-tip">仅对非图片文档生效：开启后会解析文档内嵌的图片并回填至原文，耗时更长；关闭则仅解析文本内容。{{ isImageUpload ? '当前上传均为图片，图片将被直接解析，无需此项。' : '' }}</div>
+          <div class="upload-tip">开启后会解析文档中内嵌的图片并回填至原文，耗时更长；关闭则仅解析文本内容。{{ isImageUpload ? '当前上传均为图片，图片将被直接解析，无需此项。' : '' }}</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -135,7 +179,7 @@
 </template>
 
 <script>
-import { ref, reactive, onMounted, onActivated } from 'vue'
+import { ref, reactive, onMounted, onActivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
@@ -156,13 +200,64 @@ export default {
     const creating = ref(false)
     const createDialogVisible = ref(false)
     const formRef = ref(null)
-    const uploadRef = ref(null)
-    const createForm = ref({ prdName: '', prdType: 'BIZ', parseImage: false })
+    const mainUploadRef = ref(null)
+    const relatedUploadRef = ref(null)
+    const createForm = ref({ prdName: '', prdSource: 'LINK', parseImage: false, parseSubDoc: true, relatedNames: [] })
     const isImageUpload = ref(false)
+    const linkUrl = ref('')
+    // 上传文件名：主文档（单个）+ 关联文档（多个）
+    const mainFileName = ref('')
+    const relatedFileNames = ref([])
+    const acceptExts = '.pdf,.docx,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp,.xlsx,.xls,.csv'
     const uploadUrl = `${config.baseURL}${config.apiPrefix}/common/file/upload`
+    // el-upload 走原生 XHR，不经过 axios 拦截器，需手动带上登录 token
+    const uploadHeaders = ref({ Authorization: 'Bearer ' + (localStorage.getItem('token') || '') })
+
+    const isImageName = (name) => /\.(png|jpg|jpeg|webp)$/i.test(name || '')
+
+    // prdName 只存主文档（链接模式为单个链接，上传模式为主文件名）；关联文档单独放 relatedNames
+    const syncPrdName = () => {
+      if (createForm.value.prdSource === 'LINK') {
+        createForm.value.prdName = (linkUrl.value || '').trim()
+        createForm.value.relatedNames = []
+      } else {
+        createForm.value.prdName = mainFileName.value || ''
+        createForm.value.relatedNames = [...relatedFileNames.value]
+      }
+    }
+
+    // 内嵌图片解析开关的可用性：主/关联全部为图片时禁用并强制关闭
+    const syncImageFlag = () => {
+      const names = []
+      if (mainFileName.value) names.push(mainFileName.value)
+      names.push(...relatedFileNames.value)
+      isImageUpload.value = names.length > 0 && names.every(isImageName)
+      if (isImageUpload.value) {
+        createForm.value.parseImage = false
+      }
+    }
+
+    // 链接模式下实时同步 prdName（供创建按钮禁用判断）
+    watch(linkUrl, () => {
+      if (createForm.value.prdSource === 'LINK') syncPrdName()
+    })
+
+    // 切换来源时清空另一种输入，避免串台
+    watch(() => createForm.value.prdSource, () => {
+      createForm.value.prdName = ''
+      createForm.value.parseImage = false
+      createForm.value.parseSubDoc = true
+      createForm.value.relatedNames = []
+      linkUrl.value = ''
+      mainFileName.value = ''
+      relatedFileNames.value = []
+      isImageUpload.value = false
+      if (mainUploadRef.value && mainUploadRef.value.clearFiles) mainUploadRef.value.clearFiles()
+      if (relatedUploadRef.value && relatedUploadRef.value.clearFiles) relatedUploadRef.value.clearFiles()
+    })
 
     const formRules = {
-      prdName: [{ required: true, message: '请上传需求文档', trigger: 'change' }]
+      prdName: [{ required: true, message: '请提供需求文档', trigger: 'change' }]
     }
 
     const statusTextMap = {
@@ -183,7 +278,7 @@ export default {
       FINISHED: 'success',
       FAILED: 'danger'
     }
-    const prdTypeMap = { BIZ: '业务需求', BURY: '埋点需求', API: '接口需求' }
+    const prdSourceMap = { UPLOAD: '文档', LINK: '链接' }
 
     const formatDateTime = (val) => {
       if (!val) return ''
@@ -191,6 +286,15 @@ export default {
     }
 
     const createTimeFormatter = (row) => formatDateTime(row && row.createTime)
+
+    // 需求文档展示：只显示主文档名称（两种来源一致）。优先用解析出的真实名，否则退回链接/主文件名
+    const displayDocLines = (row) => {
+      if (!row) return []
+      if (row.prdDisplayName) return [row.prdDisplayName]
+      if (row.prdSource === 'LINK') return [row.prdName || '']
+      const names = row.prdName ? row.prdName.split('\n') : []
+      return names.length ? [names[0]] : []
+    }
 
     const fetchList = async () => {
       loading.value = true
@@ -224,9 +328,20 @@ export default {
     }
 
     const beforeUpload = (file) => {
-      const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown', 'image/png', 'image/jpeg', 'image/webp']
-      if (!validTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt|md|markdown|png|jpg|jpeg|webp)$/i)) {
-        ElMessage.error('仅支持 PDF、DOCX、TXT、Markdown 文档或 PNG、JPG、JPEG、WEBP 图片')
+      const validTypes = [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+        'text/csv',
+        'text/plain',
+        'text/markdown',
+        'image/png',
+        'image/jpeg',
+        'image/webp'
+      ]
+      if (!validTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt|md|markdown|png|jpg|jpeg|webp|xlsx|xls|csv)$/i)) {
+        ElMessage.error('仅支持 PDF、DOCX、TXT、Markdown、表格(XLSX/XLS/CSV) 或 PNG、JPG、JPEG、WEBP 图片')
         return false
       }
       if (file.size > 100 * 1024 * 1024) {
@@ -236,49 +351,65 @@ export default {
       return true
     }
 
-    // 根据 el-upload 当前文件列表，同步 prdName（多个文件名以换行拼接）与图片输入状态
-    const isImageName = (name) => /\.(png|jpg|jpeg|webp)$/i.test(name || '')
-    const syncFilesFromList = (uploadFiles) => {
-      const names = (uploadFiles || [])
-        .filter(f => f.response && f.response.code === 0 && f.response.data && f.response.data.fileName)
-        .map(f => f.response.data.fileName)
-      createForm.value.prdName = names.join('\n')
-      // 仅当全部为图片时禁用并强制关闭图片解析（含文档时图片解析仍作用于文档内嵌图片）
-      isImageUpload.value = names.length > 0 && names.every(isImageName)
-      if (isImageUpload.value) {
-        createForm.value.parseImage = false
-      }
-    }
-
-    const onUploadSuccess = (response, uploadFile, uploadFiles) => {
-      if (response.code === 0 && response.data) {
-        syncFilesFromList(uploadFiles)
-        ElMessage.success('文件上传成功')
+    // 主文档：单个
+    const onMainSuccess = (response) => {
+      if (response.code === 0 && response.data && response.data.fileName) {
+        mainFileName.value = response.data.fileName
+        syncPrdName()
+        syncImageFlag()
+        ElMessage.success('主文档上传成功')
       } else {
         ElMessage.error('上传失败')
       }
+    }
+    const onMainRemove = () => {
+      mainFileName.value = ''
+      syncPrdName()
+      syncImageFlag()
+    }
+    const onMainExceed = () => {
+      ElMessage.warning('只能上传一个主文档，请先移除当前主文档再重新选择')
+    }
+
+    // 关联文档：多个，从当前文件列表重建
+    const rebuildRelated = (uploadFiles) => {
+      relatedFileNames.value = (uploadFiles || [])
+        .filter(f => f.response && f.response.code === 0 && f.response.data && f.response.data.fileName)
+        .map(f => f.response.data.fileName)
+      syncPrdName()
+      syncImageFlag()
+    }
+    const onRelatedSuccess = (response, uploadFile, uploadFiles) => {
+      if (response.code === 0 && response.data) {
+        rebuildRelated(uploadFiles)
+        ElMessage.success('关联文档上传成功')
+      } else {
+        ElMessage.error('上传失败')
+      }
+    }
+    const onRelatedRemove = (uploadFile, uploadFiles) => {
+      rebuildRelated(uploadFiles)
     }
 
     const onUploadError = () => {
       ElMessage.error('文件上传失败，请重试')
     }
 
-    const onUploadRemove = (uploadFile, uploadFiles) => {
-      syncFilesFromList(uploadFiles)
-    }
-
     const openCreateDialog = () => {
-      createForm.value = { prdName: '', prdType: 'BIZ', parseImage: false }
+      createForm.value = { prdName: '', prdSource: 'LINK', parseImage: false, parseSubDoc: true, relatedNames: [] }
       isImageUpload.value = false
-      if (uploadRef.value && uploadRef.value.clearFiles) {
-        uploadRef.value.clearFiles()
-      }
+      linkUrl.value = ''
+      mainFileName.value = ''
+      relatedFileNames.value = []
+      uploadHeaders.value = { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+      if (mainUploadRef.value && mainUploadRef.value.clearFiles) mainUploadRef.value.clearFiles()
+      if (relatedUploadRef.value && relatedUploadRef.value.clearFiles) relatedUploadRef.value.clearFiles()
       createDialogVisible.value = true
     }
 
     const handleCreate = async () => {
       if (!createForm.value.prdName) {
-        ElMessage.warning('请先上传需求文档')
+        ElMessage.warning(createForm.value.prdSource === 'LINK' ? '请填写文档链接' : '请上传主文档')
         return
       }
       creating.value = true
@@ -286,13 +417,12 @@ export default {
         createForm.value.creator = userStore.userInfo?.username || ''
         const res = await testgenApi.createTask(createForm.value)
         if (res.code !== 0) {
-          // 失败信息在 data 中
           ElMessage.error(res.data || res.msg || '创建任务失败')
           return
         }
         const taskId = res.data.taskId
         createDialogVisible.value = false
-        // 先跳转到工作区页面，让 WebSocket 建立后再触发生成
+        // 先跳转工作区，等 WebSocket 建立后再触发生成
         router.push(`/toolbox/testgen/${taskId}?generate=true`)
       } finally {
         creating.value = false
@@ -310,9 +440,7 @@ export default {
     const regenerate = async (row) => {
       try {
         await ElMessageBox.confirm('确定要重新生成吗？当前数据将被清空。', '提示', { type: 'warning' })
-        // 刷新列表以更新状态
         await fetchList()
-        // 跳转到工作区页面，让 WebSocket 建立连接
         router.push(`/toolbox/testgen/${row.id}?regenerate=true`)
       } catch (e) {
         if (e !== 'cancel') {
@@ -335,9 +463,10 @@ export default {
     }
 
     const deleteTask = async (row) => {
+      const docName = displayDocLines(row)[0] || row.prdName
       try {
         await ElMessageBox.confirm(
-          `确定要删除任务"${row.prdName}"吗？删除后不可恢复。`,
+          `确定要删除任务"${docName}"吗？删除后不可恢复。`,
           '删除确认',
           {
             confirmButtonText: '确定删除',
@@ -365,10 +494,12 @@ export default {
     onActivated(fetchList)
 
     return {
-      taskList, total, query, loading, creating, createDialogVisible, createForm, isImageUpload, formRef, uploadRef, uploadUrl, formRules,
-      statusTextMap, statusTypeMap, prdTypeMap,
-      formatDateTime, createTimeFormatter,
-      fetchList, onPageChange, onSizeChange, beforeUpload, onUploadSuccess, onUploadError, onUploadRemove,
+      taskList, total, query, loading, creating, createDialogVisible, createForm, isImageUpload,
+      linkUrl, acceptExts, formRef, mainUploadRef, relatedUploadRef, uploadUrl, uploadHeaders, formRules,
+      statusTextMap, statusTypeMap, prdSourceMap,
+      formatDateTime, createTimeFormatter, displayDocLines,
+      fetchList, onPageChange, onSizeChange, beforeUpload,
+      onMainSuccess, onMainRemove, onMainExceed, onRelatedSuccess, onRelatedRemove, onUploadError,
       openCreateDialog, handleCreate, continueGen, regenerate, downloadXmind, deleteTask
     }
   }

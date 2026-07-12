@@ -2,9 +2,6 @@ package com.seeker.tms.biz.testgen.websocket;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
-import com.seeker.tms.biz.testgen.entities.XMindNode;
-import com.seeker.tms.biz.testgen.service.AgentChatService;
-import com.seeker.tms.biz.testgen.service.TestGenService;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -14,7 +11,6 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import javax.annotation.Resource;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -45,12 +41,6 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
     private static final int SEND_BUFFER_SIZE_LIMIT = 5 * 1024 * 1024;
     /** decorator 单次发送的等待上限（毫秒）。 */
     private static final int SEND_TIME_LIMIT_MS = 10_000;
-
-    @Resource
-    private AgentChatService agentChatService;
-
-    @Resource
-    private TestGenService testGenService;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
@@ -148,15 +138,6 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
             sendToSession(decorated, "HEARTBEAT_ACK", Map.of("ts", Instant.now().toEpochMilli()));
             return;
         }
-
-        if ("CHAT_MESSAGE".equals(type)) {
-            String userMessage = payload.getString("message");
-            XMindNode treeData = payload.getObject("treeData", XMindNode.class);
-            if (treeData == null) {
-                treeData = testGenService.getXMindData(Integer.parseInt(taskId));
-            }
-            agentChatService.chat(Integer.parseInt(taskId), userMessage, treeData);
-        }
     }
 
     private String extractTaskId(WebSocketSession session) {
@@ -213,10 +194,6 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
         sendMessage(taskId, "ERROR", Map.of("error", error));
     }
 
-    public static void sendChatResponse(String taskId, Object chatResponse) {
-        sendMessage(taskId, "CHAT_RESPONSE", chatResponse);
-    }
-
     public static void sendPointCasesGenerated(String taskId, String pointId, Object cases, boolean done) {
         sendMessage(taskId, "POINT_CASES_GENERATED", Map.of("pointId", pointId, "cases", cases, "done", done));
     }
@@ -244,7 +221,7 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
             try {
                 if (s.isOpen()) s.close(CloseStatus.NORMAL);
             } catch (IOException e) {
-                log.warn("关闭 task session 失败，taskId={}", taskId, e);
+                log.warn("关闭 task session 失败，taskId={}: {}", taskId, e.toString());
             }
         }
     }

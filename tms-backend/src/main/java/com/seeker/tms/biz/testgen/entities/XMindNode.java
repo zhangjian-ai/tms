@@ -16,4 +16,5 @@ public class XMindNode {
     private List<String> icons;  // priority-1, priority-2, etc.
     private Boolean expanded;
     private List<XMindNode> children;
+    private String chapterId;  // point 节点专用：所属大纲章节的内部ID，仅逻辑层分组用，不下发大模型
 }

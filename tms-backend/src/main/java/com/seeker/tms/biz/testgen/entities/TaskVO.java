@@ -15,11 +15,20 @@ public class TaskVO {
     @ApiModelProperty("需求文档名称")
     private String prdName;
 
-    @ApiModelProperty("需求类型")
-    private String prdType;
+    @ApiModelProperty("关联文档文件名(换行拼接,仅UPLOAD)")
+    private String relatedNames;
+
+    @ApiModelProperty("需求文档展示名(LINK来源为文档真实标题)")
+    private String prdDisplayName;
+
+    @ApiModelProperty("需求来源: UPLOAD/LINK")
+    private String prdSource;
 
     @ApiModelProperty("是否解析文档内图片")
     private Boolean parseImage;
+
+    @ApiModelProperty("是否解析二级文档(仅LINK)")
+    private Boolean parseSubDoc;
 
     @ApiModelProperty("状态")
     private String status;

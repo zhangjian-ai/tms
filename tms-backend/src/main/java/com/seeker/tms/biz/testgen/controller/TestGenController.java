@@ -1,7 +1,6 @@
 package com.seeker.tms.biz.testgen.controller;
 
 import com.seeker.tms.biz.testgen.entities.*;
-import com.seeker.tms.biz.testgen.service.AgentChatService;
 import com.seeker.tms.biz.testgen.service.TestGenService;
 import com.seeker.tms.common.entities.PageResult;
 import com.seeker.tms.common.utils.MinioUtil;
@@ -23,7 +22,6 @@ import java.util.Map;
 public class TestGenController {
 
     private final TestGenService testGenService;
-    private final AgentChatService agentChatService;
     private final MinioUtil minioUtil;
 
     @ApiOperation("创建任务")

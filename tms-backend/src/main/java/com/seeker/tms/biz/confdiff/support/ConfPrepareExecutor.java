@@ -50,7 +50,7 @@ public class ConfPrepareExecutor {
             statusStore.set(projectId, PrepareStatusVO.READY, "准备完成");
             log.info("项目准备完成: {}", project.getName());
         } catch (Exception e) {
-            log.error("项目准备失败: {}", project.getName(), e);
+            log.error("项目准备失败: {}: {}", project.getName(), e.toString());
             statusStore.set(projectId, PrepareStatusVO.FAILED, e.getMessage());
         } finally {
             sshGitClient.close(session);

@@ -111,6 +111,7 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import { userApi } from '@/api/user'
 import {
   Cellphone,
   Fold,
@@ -146,15 +147,12 @@ export default {
     const userStore = useUserStore()
     const isCollapse = ref(false)
 
-    // 当前激活的菜单项
     const activeMenu = computed(() => route.path)
 
-    // 用户名
     const username = computed(() => {
       return userStore.userInfo?.username || '未登录'
     })
 
-    // 当前页面标题
     const currentPageTitle = computed(() => {
       const titleMap = {
         '/devices': '设备管理',
@@ -170,12 +168,10 @@ export default {
       return titleMap[route.path] || '设备管理'
     })
 
-    // 切换侧边栏
     const toggleSidebar = () => {
       isCollapse.value = !isCollapse.value
     }
 
-    // 处理下拉菜单命令
     const handleCommand = async (command) => {
       if (command === 'logout') {
         try {
@@ -184,6 +180,11 @@ export default {
             cancelButtonText: '取消',
             type: 'warning'
           })
+          try {
+            await userApi.logout()
+          } catch (e) {
+            // 忽略登出接口异常，继续清理本地登录态
+          }
           userStore.logout()
           ElMessage.success('已退出登录')
           router.push('/login')

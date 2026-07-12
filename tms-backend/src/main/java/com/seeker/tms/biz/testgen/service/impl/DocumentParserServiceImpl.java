@@ -5,6 +5,7 @@ import com.seeker.tms.biz.testgen.service.AiModelService;
 import com.seeker.tms.biz.testgen.service.TestGenPromptService;
 import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.utils.PromptLoader;
+import com.seeker.tms.common.docsource.ImageTextRecognizer;
 import dev.langchain4j.data.message.ImageContent;
 import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.data.message.UserMessage;
@@ -20,6 +21,12 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
@@ -39,12 +46,16 @@ import java.util.function.BiConsumer;
 @Slf4j
 @Service
 @AllArgsConstructor
-public class DocumentParserServiceImpl implements DocumentParserService {
+public class DocumentParserServiceImpl implements DocumentParserService, ImageTextRecognizer {
 
     private static final int MAX_IMAGE_SIZE = 512 * 1024;
     private static final String IMG_PLACEHOLDER = "___IMAGE_PLACEHOLDER_%d___";
     /** 图片识别并发度：vision API 通常按账号有 RPS 限制，4 是稳妥起点 */
     private static final int IMAGE_RECOGNIZE_CONCURRENCY = 4;
+
+    /** 表格文件读取上限，避免超大表拖垮解析 */
+    private static final int MAX_SHEET_ROWS = 500;
+    private static final int MAX_SHEET_COLS = 50;
 
     /** 支持「直接上传图片」作为需求来源的图片格式（vision 模型普遍支持） */
     private static final Set<String> IMAGE_EXTS = Set.of("png", "jpg", "jpeg", "webp");
@@ -88,13 +99,15 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             return text;
         }
 
-        // 第一步：提取文本。仅在需要解析图片时才抽取图片字节（避免无谓的解码与堆占用）
+        // 仅在需要解析图片时才抽取图片字节（避免无谓的解码与堆占用）
         List<byte[]> pictures = new ArrayList<>();
         String text = switch (ext) {
             case "pdf" -> parsePdf(fileBytes, pictures, parseImage);
             case "docx" -> parseDocx(fileBytes, pictures, parseImage);
             case "md", "markdown" -> parseMarkdown(fileBytes, pictures, parseImage);
             case "txt" -> new String(fileBytes, StandardCharsets.UTF_8);
+            case "xlsx", "xls" -> parseSpreadsheet(fileBytes);
+            case "csv" -> parseCsv(fileBytes);
             default -> new String(fileBytes, StandardCharsets.UTF_8);
         };
 
@@ -102,7 +115,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             progressCallback.accept(40, "文本提取完成，共 " + pictures.size() + " 张图片");
         }
 
-        // 第二步：识别图片并回填占位符。未开启图片解析时，上一步已不抽取图片，pictures 为空，直接跳过
+        // 未开启图片解析时，上一步已不抽取图片，pictures 为空，直接跳过
         if (parseImage && !pictures.isEmpty()) {
             text = recognizeAndFillBack(text, pictures, progressCallback);
         }
@@ -173,7 +186,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
                 return downloadFile(src);
             }
         } catch (Exception e) {
-            log.warn("Markdown 图片加载失败: {}", src, e);
+            log.warn("Markdown 图片加载失败: {}: {}", src, e.toString());
         }
         return null; // 相对路径等无法获取，忽略
     }
@@ -185,8 +198,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     @Override
     public String recognizeImage(byte[] imageBytes, String surroundingText) {
-        // 兼容旧接口，但实际上新逻辑需要完整文档
-        // 这里简化处理，直接识别图片内容
+        // 兼容旧接口：直接识别单张图片内容
         try {
             byte[] compressed = compressImage(imageBytes);
 
@@ -218,7 +230,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             ));
             return response.content().text();
         } catch (Exception e) {
-            log.warn("图片识别失败", e);
+            log.warn("图片识别失败: {}", e.toString());
             return "[图片内容无法识别]";
         }
     }
@@ -317,7 +329,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             ));
             return response.content().text();
         } catch (Exception e) {
-            log.warn("图片识别失败，index={}", index, e);
+            log.warn("图片识别失败，index={}: {}", index, e.toString());
             return "[图片内容无法识别]";
         }
     }
@@ -354,7 +366,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             String text = response.content().text();
             return text != null ? text : "";
         } catch (Exception e) {
-            log.warn("图片需求解析失败，ext={}", ext, e);
+            log.warn("图片需求解析失败，ext={}: {}", ext, e.toString());
             return "";
         }
     }
@@ -382,7 +394,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
             ImageIO.write(resized, "jpeg", baos);
             return baos.toByteArray();
         } catch (Exception e) {
-            log.warn("图片压缩失败，使用原图", e);
+            log.warn("图片压缩失败，使用原图: {}", e.toString());
             return imageBytes;
         }
     }
@@ -391,7 +403,6 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     private String parsePdf(byte[] fileBytes, List<byte[]> pictures, boolean parseImage) {
         try (PDDocument doc = PDDocument.load(fileBytes)) {
-            // 提取全部文本（PDF 转 HTML 再提取，保留图片位置）
             // PDFBox 的 TextStripper 无法标记图片位置，改为逐页处理
             StringBuilder result = new StringBuilder();
             int imgIdx = 0;
@@ -439,7 +450,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
             return result.toString();
         } catch (Exception e) {
-            log.error("PDF 解析失败", e);
+            log.error("PDF 解析失败: {}", e.toString());
             return "";
         }
     }
@@ -468,7 +479,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
                 }
             }
         } catch (Exception e) {
-            log.warn("提取页面图片失败", e);
+            log.warn("提取页面图片失败: {}", e.toString());
         }
         return images;
     }
@@ -477,7 +488,6 @@ public class DocumentParserServiceImpl implements DocumentParserService {
 
     private String parseDocx(byte[] fileBytes, List<byte[]> pictures, boolean parseImage) {
         try {
-            // 使用 Mammoth 将 DOCX 转成 HTML
             org.zwobble.mammoth.DocumentConverter converter = new org.zwobble.mammoth.DocumentConverter();
             org.zwobble.mammoth.Result<String> result = converter.convertToHtml(new ByteArrayInputStream(fileBytes));
             String html = result.getValue();
@@ -518,10 +528,9 @@ public class DocumentParserServiceImpl implements DocumentParserService {
                 com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter.builder().build();
             String markdown = converter2.convert(html);
 
-            // 清理多余的空行
             return markdown.replaceAll("\\n{3,}", "\n\n").trim();
         } catch (Exception e) {
-            log.error("Word 文档解析失败", e);
+            log.error("Word 文档解析失败: {}", e.toString());
             return "";
         }
     }
@@ -538,7 +547,7 @@ public class DocumentParserServiceImpl implements DocumentParserService {
                 return resp.body().bytes();
             }
         } catch (Exception e) {
-            log.error("下载文件失败: {}", url, e);
+            log.error("下载文件失败: {}: {}", url, e.toString());
         }
         return null;
     }
@@ -562,5 +571,61 @@ public class DocumentParserServiceImpl implements DocumentParserService {
         int dot = fileName.lastIndexOf('.');
         if (dot < 0 || dot == fileName.length() - 1) return false;
         return IMAGE_EXTS.contains(fileName.substring(dot + 1).toLowerCase());
+    }
+
+    // ---- ImageTextRecognizer 实现：供 common 层文档抓取器识别文档内嵌图片 ----
+
+    @Override
+    public String recognize(byte[] image, String surroundingText) {
+        return recognizeImage(image, surroundingText);
+    }
+
+    // ---- 表格文件解析（xlsx/xls/csv）：序列化为文本表，供需求理解使用 ----
+
+    /** 用 POI 逐 sheet 读取，序列化为 `## sheetName` + `单元格 | 单元格` 文本表；行列有上限 */
+    private String parseSpreadsheet(byte[] fileBytes) {
+        StringBuilder sb = new StringBuilder();
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(fileBytes))) {
+            DataFormatter fmt = new DataFormatter();
+            int sheetCount = wb.getNumberOfSheets();
+            for (int s = 0; s < sheetCount; s++) {
+                Sheet sheet = wb.getSheetAt(s);
+                sb.append("## ").append(sheet.getSheetName()).append('\n');
+                int lastRow = Math.min(sheet.getLastRowNum(), MAX_SHEET_ROWS - 1);
+                for (int r = sheet.getFirstRowNum(); r <= lastRow; r++) {
+                    Row row = sheet.getRow(r);
+                    if (row == null) continue;
+                    int lastCol = Math.min(row.getLastCellNum(), MAX_SHEET_COLS);
+                    StringBuilder line = new StringBuilder();
+                    boolean hasContent = false;
+                    for (int c = 0; c < lastCol; c++) {
+                        Cell cell = row.getCell(c);
+                        String v = cell != null ? fmt.formatCellValue(cell).trim() : "";
+                        if (!v.isEmpty()) hasContent = true;
+                        line.append(c > 0 ? " | " : "").append(v);
+                    }
+                    if (hasContent) sb.append(line).append('\n');
+                }
+                sb.append('\n');
+            }
+        } catch (Exception e) {
+            log.error("表格文件解析失败: {}", e.toString());
+            return "";
+        }
+        return sb.toString();
+    }
+
+    /** CSV 简单按行解析，逗号分隔渲染为 `单元格 | 单元格` */
+    private String parseCsv(byte[] fileBytes) {
+        String raw = new String(fileBytes, StandardCharsets.UTF_8);
+        StringBuilder sb = new StringBuilder();
+        String[] lines = raw.split("\\r?\\n");
+        int limit = Math.min(lines.length, MAX_SHEET_ROWS);
+        for (int i = 0; i < limit; i++) {
+            String line = lines[i];
+            if (line == null || line.isBlank()) continue;
+            sb.append(line.replace(",", " | ")).append('\n');
+        }
+        return sb.toString();
     }
 }

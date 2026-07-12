@@ -56,7 +56,7 @@
           </div>
 
           <div
-            v-for="(m, idx) in local.modules"
+            v-for="(m, idx) in local.chapters"
             :key="idx"
             class="module-card"
           >
@@ -102,7 +102,7 @@ export default {
   name: 'OutlineConfirmPanel',
   components: { Close },
   props: {
-    outline: { type: Object, default: () => ({ summary: '', modules: [] }) },
+    outline: { type: Object, default: () => ({ summary: '', chapters: [] }) },
     loading: { type: Boolean, default: false }
   },
   emits: ['confirm', 'cancel'],
@@ -122,7 +122,7 @@ export default {
       const src = v || {}
       return {
         summary: src.summary || '',
-        modules: (src.modules || []).map(m => ({
+        chapters: (src.chapters || []).map(m => ({
           name: m.name || '',
           scope: m.scope || ''
         }))
@@ -130,11 +130,11 @@ export default {
     }
 
     function addModule() {
-      local.value.modules.push({ name: '', scope: '' })
+      local.value.chapters.push({ name: '', scope: '' })
     }
 
     async function removeModule(idx) {
-      const m = local.value.modules[idx]
+      const m = local.value.chapters[idx]
       const name = (m && m.name && m.name.trim()) || '该章节'
       try {
         await ElMessageBox.confirm(
@@ -142,7 +142,7 @@ export default {
           '删除章节',
           { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
         )
-        local.value.modules.splice(idx, 1)
+        local.value.chapters.splice(idx, 1)
       } catch (e) {
         // 用户取消
       }
@@ -151,7 +151,7 @@ export default {
     function onConfirm() {
       const cleaned = {
         summary: (local.value.summary || '').trim(),
-        modules: local.value.modules
+        chapters: local.value.chapters
           .map(m => ({
             name: (m.name || '').trim(),
             scope: (m.scope || '').trim()

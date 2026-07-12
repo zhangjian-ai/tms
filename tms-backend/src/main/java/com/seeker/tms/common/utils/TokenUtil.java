@@ -1,19 +1,24 @@
 package com.seeker.tms.common.utils;
 
+import com.seeker.tms.common.auth.TokenService;
+
 /**
- * 当前后端尚未引入真实 JWT，前端 token 形如 "user_{username}"。
- * 解析逻辑集中在此，未来切换真实鉴权时只需替换实现。
+ * 登录 token 解析入口。真实解析委托给 Redis 支持的 {@link TokenService}，
+ * 通过静态桥接兼容非 Spring 管理的调用点（如 WebSocket 握手拦截器）。
  */
 public class TokenUtil {
 
-    private static final String TOKEN_PREFIX = "user_";
+    private static TokenService tokenService;
 
     private TokenUtil() {}
 
+    /** 由 TokenService 在启动时注入自身 */
+    public static void bind(TokenService service) {
+        tokenService = service;
+    }
+
     public static String parseUsername(String token) {
         if (token == null || token.isBlank()) return null;
-        if (!token.startsWith(TOKEN_PREFIX)) return null;
-        String username = token.substring(TOKEN_PREFIX.length()).trim();
-        return username.isEmpty() ? null : username;
+        return tokenService != null ? tokenService.resolve(token) : null;
     }
 }

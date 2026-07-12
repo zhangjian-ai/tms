@@ -36,10 +36,8 @@ public class DeviceHoldHandler extends TextWebSocketHandler {
      */
     @Override
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
-        // 消息体
         JSONObject payload = JSON.parseObject((String) message.getPayload());
 
-        // 根据消息类型处理
         String serial = payload.getString("serial");
         String sessionId = payload.getString("sessionId");
 

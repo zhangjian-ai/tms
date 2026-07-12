@@ -63,7 +63,7 @@ public class ConfCompareExecutor {
             historyStore.update(result);
             log.info("配置对比完成(异步): id={}, consistent={}", result.getId(), result.isConsistent());
         } catch (Exception e) {
-            log.error("配置对比失败(异步): id={}", placeholder.getId(), e);
+            log.error("配置对比失败(异步): id={}: {}", placeholder.getId(), e.toString());
             placeholder.setStatus(CompareResultVO.FAILED);
             placeholder.setMessage(e.getMessage());
             placeholder.setElapsedMs(System.currentTimeMillis() - start);
@@ -132,7 +132,7 @@ public class ConfCompareExecutor {
             result.setReportUrl(minioUtil.getUrl(key));
             result.setReportDownloadUrl(minioUtil.getDownloadUrl(key, baseName(key)));
         } catch (Exception e) {
-            log.error("生成对比报告失败", e);
+            log.error("生成对比报告失败: {}", e.toString());
         }
     }
 

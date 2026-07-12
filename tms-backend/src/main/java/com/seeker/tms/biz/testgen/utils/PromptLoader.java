@@ -31,7 +31,7 @@ public class PromptLoader {
                 return content;
             }
         } catch (Exception e) {
-            log.error("加载 Prompt 文件失败: {}", promptName, e);
+            log.error("加载 Prompt 文件失败: {}: {}", promptName, e.toString());
             throw new RuntimeException("Prompt 文件加载失败: " + promptName, e);
         }
     }

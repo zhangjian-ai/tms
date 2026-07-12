@@ -5,7 +5,6 @@ export const useUserStore = defineStore('user', () => {
   const userInfo = ref(null)
   const token = ref(localStorage.getItem('token') || '')
 
-  // 设置用户信息
   const setUserInfo = (info) => {
     userInfo.value = info
     if (info) {
@@ -15,7 +14,6 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  // 设置 token
   const setToken = (newToken) => {
     token.value = newToken
     if (newToken) {
@@ -25,7 +23,7 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  // 初始化用户信息（从 localStorage 恢复）
+  // 从 localStorage 恢复用户信息
   const initUserInfo = () => {
     const savedUserInfo = localStorage.getItem('userInfo')
     if (savedUserInfo) {
@@ -38,7 +36,6 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  // 登出
   const logout = () => {
     userInfo.value = null
     token.value = ''
@@ -46,7 +43,6 @@ export const useUserStore = defineStore('user', () => {
     localStorage.removeItem('token')
   }
 
-  // 检查是否已登录
   const isLoggedIn = () => {
     return !!userInfo.value && !!token.value
   }

@@ -54,7 +54,7 @@ public class TestGenPromptServiceImpl extends ServiceImpl<PromptMapper, PromptPO
             try {
                 content = minioUtil.getContent(po.getObjectKey());
             } catch (Exception e) {
-                log.warn("读取提示词内容失败,回退静态文件: stageKey={}, objectKey={}", stageKey, po.getObjectKey(), e);
+                log.warn("读取提示词内容失败,回退静态文件: stageKey={}, objectKey={}: {}", stageKey, po.getObjectKey(), e.toString());
             }
         }
         if (StrUtil.isBlank(content)) {
@@ -102,7 +102,7 @@ public class TestGenPromptServiceImpl extends ServiceImpl<PromptMapper, PromptPO
         try {
             vo.setContent(minioUtil.getContent(po.getObjectKey()));
         } catch (Exception e) {
-            log.warn("详情读取提示词内容失败: id={}, objectKey={}", id, po.getObjectKey(), e);
+            log.warn("详情读取提示词内容失败: id={}, objectKey={}: {}", id, po.getObjectKey(), e.toString());
             if (StrUtil.isNotBlank(po.getStageKey())) {
                 vo.setContent(PromptLoader.load(po.getStageKey()));
             }
@@ -167,7 +167,7 @@ public class TestGenPromptServiceImpl extends ServiceImpl<PromptMapper, PromptPO
             try {
                 minioUtil.deleteFile(po.getObjectKey());
             } catch (Exception e) {
-                log.warn("删除提示词内容失败(忽略): objectKey={}", po.getObjectKey(), e);
+                log.warn("删除提示词内容失败(忽略): objectKey={}: {}", po.getObjectKey(), e.toString());
             }
         }
         return removed;
@@ -224,7 +224,7 @@ public class TestGenPromptServiceImpl extends ServiceImpl<PromptMapper, PromptPO
                 super.save(po);
                 log.info("导入默认提示词: stageKey={}, id={}", stageKey, po.getId());
             } catch (Exception e) {
-                log.warn("导入默认提示词失败(将回退静态文件): stageKey={}", stageKey, e);
+                log.warn("导入默认提示词失败(将回退静态文件): stageKey={}: {}", stageKey, e.toString());
             }
         }
     }

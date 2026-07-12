@@ -50,7 +50,7 @@ public class MinioUtil {
             return objectWriteResponse.etag() != null;
 
         } catch (Exception e) {
-            log.error("文件上传失败", e);
+            log.error("文件上传失败: {}", e.toString());
             throw new RuntimeException("文件上传失败: " + e.getMessage());
         }
     }
@@ -82,7 +82,7 @@ public class MinioUtil {
                             .build());
             return resp.etag() != null;
         } catch (Exception e) {
-            log.error("文件上传失败: {}", objectKey, e);
+            log.error("文件上传失败: {}: {}", objectKey, e.toString());
             throw new RuntimeException("文件上传失败: " + e.getMessage());
         }
     }
@@ -161,7 +161,7 @@ public class MinioUtil {
                     .object(fileName)
                     .build());
         } catch (Exception e) {
-            log.error("文件删除失败", e);
+            log.error("文件删除失败: {}", e.toString());
             throw new RuntimeException("文件删除失败: " + e.getMessage());
         }
     }

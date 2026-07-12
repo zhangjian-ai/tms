@@ -1,0 +1,9 @@
+## 当前章节
+- 名称: {{chapterName}}
+- 内容摘要: {{chapterScope}}
+
+## 本章节现有测试点清单
+{{points}}
+
+## 需求文档
+{{doc}}

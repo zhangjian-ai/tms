@@ -142,7 +142,6 @@ import { useUserStore } from '@/stores/user.js'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import DefaultPagination from '@/components/Pagination.vue'
 
-// 生成会话令牌
 const genSessionId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID()
@@ -165,7 +164,6 @@ export default {
     const deviceList = ref([])
     let pollTimer = null
 
-    // 搜索表单
     const searchForm = reactive({
       name: '',
       serial: '',
@@ -174,7 +172,6 @@ export default {
       osVersion: ''
     })
 
-    // 分页信息
     const pagination = reactive({
       pageNo: 1,
       pageSize: 10,
@@ -201,13 +198,11 @@ export default {
       }
     }
 
-    // 搜索
     const handleSearch = () => {
       pagination.pageNo = 1
       getDeviceList()
     }
 
-    // 重置搜索
     const handleReset = () => {
       Object.keys(searchForm).forEach(key => {
         searchForm[key] = ''
@@ -216,7 +211,6 @@ export default {
       getDeviceList()
     }
 
-    // 分页改变事件统一处理
     const handlePaginationChange = (event) => {
       if (event.type === 'size') {
         pagination.pageNo = 1
@@ -224,7 +218,6 @@ export default {
       getDeviceList()
     }
 
-    // 根据平台类型获取对应路由名称
     const getDeviceRouteName = (deviceSys) => {
       const routeMap = {
         'android': 'AndroidDevice',
@@ -234,7 +227,6 @@ export default {
       return routeMap[deviceSys] || null
     }
 
-    // 占用设备并跳转到对应平台的详情页
     const handleHoldDevice = async (row) => {
       const routeName = getDeviceRouteName(row.deviceSys)
       if (!routeName) {
@@ -287,7 +279,6 @@ export default {
       }
     }
 
-    // 获取操作系统标签类型
     const getDeviceSysTagType = (deviceSys) => {
       const typeMap = {
         'android': 'success',
@@ -297,7 +288,6 @@ export default {
       return typeMap[deviceSys] || 'info'
     }
 
-    // 获取操作系统标签文本
     const getDeviceSysLabel = (deviceSys) => {
       const labelMap = {
         'android': 'Android',
@@ -307,7 +297,6 @@ export default {
       return labelMap[deviceSys] || deviceSys
     }
 
-    // 表头样式
     const headerCellStyle = () => {
       return {
         textAlign: 'center',
