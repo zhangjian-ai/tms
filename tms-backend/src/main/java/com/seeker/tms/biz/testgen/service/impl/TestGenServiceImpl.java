@@ -479,7 +479,6 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         params.put("summary", summary);
         params.put("doc", docText);
 
-        String system = extractSystem;
         String user = PromptLoader.loadWithParams("extract_points_user", params);
         Object lock = getTaskLock(taskId);
 
@@ -490,7 +489,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             // 记录本次尝试新增的测试点 id，重试前据此清理，避免与下一次结果叠加
             List<String> addedThisAttempt = new ArrayList<>();
             try {
-                callLlmStreaming(system, user, (jsonObj) -> {
+                callLlmStreaming(extractSystem, user, (jsonObj) -> {
                     try {
                         synchronized (lock) {
                             bindModuleToOutline(jsonObj, chapterName);
