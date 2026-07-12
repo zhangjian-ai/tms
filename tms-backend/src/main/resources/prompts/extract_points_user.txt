@@ -2,7 +2,7 @@
 - 名称: {{chapterName}}
 - 内容摘要: {{chapterScope}}
 
-## 全局摘要
+## 需求摘要
 {{summary}}
 
 ## 需求文档
