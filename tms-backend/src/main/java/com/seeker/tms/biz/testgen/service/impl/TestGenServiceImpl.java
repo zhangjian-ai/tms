@@ -41,7 +41,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
@@ -618,21 +620,22 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         }
 
         String system = testGenPromptService.getSystemPrompt("refine_chapter_system");
-        List<JSONObject> results = runRefineCalls(taskId, paramsList, system, "refine_chapter_user");
+        RefineBatch batch = runRefineCalls(taskId, paramsList, system, "refine_chapter_user");
 
         Object lock = getTaskLock(taskId);
         int removed = 0, added = 0;
         synchronized (lock) {
             XMindNode current = getXMindData(taskId);
             if (current == null) return;
-            for (JSONObject res : results) {
+            for (JSONObject res : batch.results) {
                 if (res == null) continue;
                 removed += applyDuplicateRemovals(current, res.getJSONArray("duplicateGroups"));
                 added += applyAdditions(current, res.getJSONArray("additions"));
             }
             saveXMindData(taskId, current);
         }
-        String msg = "章节内精修完成：去重/合并 " + removed + " 条，补齐 " + added + " 条";
+        String msg = "章节内精修完成：去重/合并 " + removed + " 条，补齐 " + added + " 条"
+                + (batch.hasFailure() ? "（" + batch.errors.size() + " 个章节精修失败已跳过：" + batch.firstError() + "）" : "");
         log.info("taskId={} {}", taskId, msg);
         TestGenWebSocketHandler.sendProgress(wsKey, msg);
     }
@@ -651,14 +654,22 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         params.put("doc", doc);
 
         String system = testGenPromptService.getSystemPrompt("refine_global_system");
-        List<JSONObject> results = runRefineCalls(taskId, List.of(params), system, "refine_global_user");
+        RefineBatch batch = runRefineCalls(taskId, List.of(params), system, "refine_global_user");
+
+        // 调用失败(超时/网络/输出无法解析)时明确上报,避免与"确实无可合并"混淆成"去重/合并 0 条"
+        if (batch.hasFailure()) {
+            String msg = "全局精修未完成，已跳过：" + batch.firstError();
+            log.warn("taskId={} {}", taskId, msg);
+            TestGenWebSocketHandler.sendProgress(wsKey, msg);
+            return;
+        }
 
         Object lock = getTaskLock(taskId);
         int removed = 0;
         synchronized (lock) {
             XMindNode current = getXMindData(taskId);
             if (current == null) return;
-            for (JSONObject res : results) {
+            for (JSONObject res : batch.results) {
                 if (res == null) continue;
                 removed += applyDuplicateRemovals(current, res.getJSONArray("duplicateGroups"));
             }
@@ -669,11 +680,19 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         TestGenWebSocketHandler.sendProgress(wsKey, msg);
     }
 
-    /** 并发执行一批精修调用（每批一个 LLM 调用），返回解析后的结果（失败为 null） */
-    private List<JSONObject> runRefineCalls(Integer taskId, List<Map<String, String>> paramsList,
-                                            String system, String userPromptKey) {
-        List<JSONObject> out = new ArrayList<>();
-        if (paramsList == null || paramsList.isEmpty()) return out;
+    /** 一批精修调用的结果:results 与入参一一对应(失败为 null),errors 收集失败原因 */
+    private static final class RefineBatch {
+        final List<JSONObject> results = new ArrayList<>();
+        final List<String> errors = new ArrayList<>();
+        boolean hasFailure() { return !errors.isEmpty(); }
+        String firstError() { return errors.isEmpty() ? "" : errors.get(0); }
+    }
+
+    /** 并发执行一批精修调用（每批一个 LLM 调用），返回解析结果与失败原因 */
+    private RefineBatch runRefineCalls(Integer taskId, List<Map<String, String>> paramsList,
+                                       String system, String userPromptKey) {
+        RefineBatch batch = new RefineBatch();
+        if (paramsList == null || paramsList.isEmpty()) return batch;
         int concurrency = Math.min(4, paramsList.size());
         ExecutorService pool = Executors.newFixedThreadPool(concurrency, r -> {
             Thread t = new Thread(r, "refine-" + taskId);
@@ -684,22 +703,30 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
             List<CompletableFuture<JSONObject>> futures = new ArrayList<>();
             for (Map<String, String> params : paramsList) {
                 futures.add(CompletableFuture.supplyAsync(() -> {
-                    try {
-                        String resp = callLlmBlocking(system, PromptLoader.loadWithParams(userPromptKey, params));
-                        return parseRefineResponse(resp);
-                    } catch (Exception e) {
-                        log.warn("精修调用失败，跳过: {}", e.toString());
-                        return null;
+                    String resp = callLlmBlocking(system, PromptLoader.loadWithParams(userPromptKey, params));
+                    JSONObject parsed = parseRefineResponse(resp);
+                    if (parsed == null) {
+                        // 调用成功但模型输出无法解析为预期 JSON —— 视为失败,连同原文抛出便于定位
+                        throw new IllegalStateException("模型返回无法解析为预期JSON");
                     }
+                    return parsed;
                 }, pool));
             }
             for (CompletableFuture<JSONObject> f : futures) {
-                try { out.add(f.join()); } catch (Exception e) { out.add(null); }
+                try {
+                    batch.results.add(f.join());
+                } catch (Exception e) {
+                    Throwable cause = (e instanceof java.util.concurrent.CompletionException && e.getCause() != null)
+                            ? e.getCause() : e;
+                    log.warn("taskId={} 精修调用失败", taskId, cause);
+                    batch.results.add(null);
+                    batch.errors.add(describeThrowable(cause));
+                }
             }
         } finally {
             pool.shutdown();
         }
-        return out;
+        return batch;
     }
 
     /** 收集所有 point 节点的 id/type/module/content 视图，给精修 agent 使用 */    private List<Map<String, String>> collectPointsFull(XMindNode root) {
@@ -881,8 +908,14 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         );
         try {
             future.get(timeoutSec, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            throw new RuntimeException("LLM 调用失败", e);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("LLM 调用超时（>" + timeoutSec + "s，已接收 " + buffer.length() + " 字符）", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new RuntimeException("LLM 调用失败：" + describeThrowable(cause), cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("LLM 调用被中断", e);
         }
         return repairJsonInnerQuotes(buffer.toString());
     }
