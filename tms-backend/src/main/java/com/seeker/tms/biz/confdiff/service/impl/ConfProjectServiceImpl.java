@@ -14,6 +14,7 @@ import com.seeker.tms.biz.confdiff.entities.ConfProjectVO;
 import com.seeker.tms.biz.confdiff.mapper.ConfProjectMapper;
 import com.seeker.tms.biz.confdiff.service.ConfMachineService;
 import com.seeker.tms.biz.confdiff.service.ConfProjectService;
+import com.seeker.tms.biz.confdiff.support.ConfCompareHistoryStore;
 import com.seeker.tms.common.entities.PageResult;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +32,7 @@ import java.util.stream.Collectors;
 public class ConfProjectServiceImpl extends ServiceImpl<ConfProjectMapper, ConfProjectPO> implements ConfProjectService {
 
     private final ConfMachineService confMachineService;
+    private final ConfCompareHistoryStore historyStore;
 
     @Override
     public PageResult<ConfProjectVO> page(ConfProjectQueryDTO query) {
@@ -81,7 +83,11 @@ public class ConfProjectServiceImpl extends ServiceImpl<ConfProjectMapper, ConfP
 
     @Override
     public boolean removeProject(Integer id) {
-        return this.removeById(id);
+        boolean removed = this.removeById(id);
+        if (removed) {
+            historyStore.deleteByProject(id);
+        }
+        return removed;
     }
 
     @Override
