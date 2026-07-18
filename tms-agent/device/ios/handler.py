@@ -90,7 +90,6 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
         self.udid = udid
         self.streaming = False
 
-        # 发送连接确认
         if self.ws_connection and not self.ws_connection.is_closing():
             self.write_message(json.dumps({
                 "type": "connected",
@@ -146,18 +145,15 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 }))
                 return
 
-            # 从设备管理器获取设备的 MJPEG 端口
             if self.device_manager and self.udid in self.device_manager.devices:
                 device = self.device_manager.devices[self.udid]
                 if not device.online or not device.init:
                     raise Exception(f"设备 {self.udid} 未就绪")
-                # 投屏校验
                 if not (device.occupied and device.cast):
                     await self.write_message(json.dumps({
                         "type": "error",
                         "message": "设备未开启投屏"
                     }))
-                    self.streaming = False
                     return
                 self.mjpeg_port = device.mjpeg_port
                 if not self.mjpeg_port:
@@ -166,16 +162,13 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 raise Exception(f"设备 {self.udid} 不存在或代理未启动")
 
             self.streaming = True
-            # 登记为该设备当前投屏客户端
             self._active_stream_clients[self.udid] = self
 
-            # 发送流开始通知
             await self.write_message(json.dumps({
                 "type": "stream_started",
                 "fps": self.TARGET_FPS
             }))
 
-            # 启动 MJPEG 流任务
             tornado.ioloop.IOLoop.current().spawn_callback(self._stream_mjpeg)
 
         except Exception as e:
@@ -235,7 +228,6 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
         finally:
             self.streaming = False
 
-        # 设备断开：通知并关闭前端投屏连接
         if disconnected:
             try:
                 if self.ws_connection and not self.ws_connection.is_closing():
@@ -300,14 +292,12 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             if not device.online or not device.init:
                 raise Exception(f"设备 {udid} 未就绪")
 
-            # 从设备管理器获取 WDA 客户端
             wda_client = device.wda_client
             if not wda_client or not wda_client.session_id:
                 raise Exception(f"设备 {udid} WDA 客户端未初始化")
 
             self.wda_client = wda_client
 
-            # 获取屏幕尺寸
             size = await wda_client.get_window_size()
             if size:
                 self.device_resolution = size
@@ -571,7 +561,6 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
 
             xml = await self.wda_client.get_source()
             if xml:
-                # 压缩 XML
                 compressed = gzip.compress(xml.encode('utf-8'))
                 encoded = base64.b64encode(compressed).decode('utf-8')
 

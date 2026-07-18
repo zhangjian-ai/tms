@@ -10,6 +10,11 @@ from logzero import logger
 DOWNLOAD_DIR = Path(__file__).parent / "static"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+# scrcpy-server 版本与设备端路径（带版本号，避免与旧版本在固定路径冲突）
+# device.py 复用这两个常量，保证安装与运行时使用同一版本、同一路径。
+SCRCPY_VERSION = "2.7"
+SCRCPY_SERVER_REMOTE = f"/data/local/tmp/scrcpy-server-{SCRCPY_VERSION}.jar"
+
 # 镜像源配置
 MIRROR_SOURCES = {
     # scrcpy-server镜像源（设备端服务器）
@@ -82,8 +87,8 @@ class AndroidToolDownloader:
         """下载scrcpy-server"""
         logger.info("下载scrcpy-server...")
 
-        # scrcpy-server版本（与 scrcpy/device.py 的 SCRCPY_VERSION 保持一致）
-        version = "2.7"
+        # scrcpy-server版本（模块级单一来源，device.py 复用同一常量）
+        version = SCRCPY_VERSION
         server_file = f"scrcpy-server-v{version}"
         zip_file = f"scrcpy-server-{version}.zip"
 
@@ -130,7 +135,7 @@ class AndroidDeviceInstaller:
 
     def install_scrcpy_server(self, device: u2.Device) -> bool:
         """安装scrcpy-server到设备"""
-        server_zip = "scrcpy-server-2.7.zip"
+        server_zip = f"scrcpy-server-{SCRCPY_VERSION}.zip"
         zip_path = self.download_dir / server_zip
 
         # 检查zip文件是否已下载
@@ -140,7 +145,7 @@ class AndroidDeviceInstaller:
                 logger.error("下载scrcpy-server失败")
                 return False
 
-        device_path = "/data/local/tmp/scrcpy-server"
+        device_path = SCRCPY_SERVER_REMOTE
 
         # 检查设备上是否已存在
         try:
@@ -178,8 +183,8 @@ class AndroidDeviceInstaller:
 
         # 检查scrcpy-server是否已安装
         try:
-            result = device.shell("ls -l /data/local/tmp/scrcpy-server").output
-            status["scrcpy_server"] = "scrcpy-server" in result
+            result = device.shell(f"ls -l {SCRCPY_SERVER_REMOTE}").output
+            status["scrcpy_server"] = SCRCPY_VERSION in result or "scrcpy-server" in result
         except:
             status["scrcpy_server"] = False
 

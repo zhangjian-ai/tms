@@ -22,7 +22,6 @@ from device.android.tools.adb import get_adb_bin
 from utils.variables import settings
 
 
-# 通用XML获取函数
 def get_device_hierarchy_xml(device, compress=True):
     """获取设备UI层次结构XML的通用函数"""
     if not device:
@@ -31,7 +30,6 @@ def get_device_hierarchy_xml(device, compress=True):
     hierarchy = device.dump_hierarchy()
 
     if compress:
-        # 压缩并编码
         compressed = gzip.compress(hierarchy.encode('utf-8'))
         encoded = base64.b64encode(compressed).decode('utf-8')
         return {
@@ -108,7 +106,6 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
             self.close()
             return
 
-        # 发送连接确认
         if self.ws_connection and not self.ws_connection.is_closing():
             self.write_message(json.dumps({
                 "type": "connected",
@@ -120,12 +117,10 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
     def on_message(self, message):
         """处理WebSocket消息 - 仅处理scrcpy投屏相关"""
         try:
-            # 检查是否为二进制数据（scrcpy控制指令）
             if isinstance(message, bytes):
                 self._handle_scrcpy_binary_control(message)
                 return
 
-            # 处理JSON消息
             data = json.loads(message)
             msg_type = data.get("type")
 
@@ -185,12 +180,10 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
                     }))
                 return
 
-            # 使用scrcpy管理器启动流
             success = await scrcpy_manager.prepare_device_stream(self.serial, self)
 
             if success:
                 self.streaming = True
-                # 获取设备分辨率信息
                 scrcpy_device = await scrcpy_manager.get_device_client(self.serial)
                 resolution_data = None
                 if scrcpy_device and scrcpy_device.resolution:
@@ -199,9 +192,10 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
                         "height": scrcpy_device.resolution[1]
                     }
 
-                # 发送流开始通知，先告知分辨率
+                # 发送流开始通知，先告知分辨率与帧率（作为编码参数的单一来源）
                 message_data = {
-                    "type": "stream_started"
+                    "type": "stream_started",
+                    "fps": scrcpy_device.max_fps
                 }
                 if resolution_data:
                     message_data["resolution"] = resolution_data
@@ -228,7 +222,6 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
         try:
             self.streaming = False
 
-            # 使用scrcpy管理器停止流
             await scrcpy_manager.stop_device_stream(self.serial, self)
 
             await self.write_message(json.dumps({
@@ -291,17 +284,14 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             return
 
         try:
-            # 通过ADB客户端获取设备
             self.device = await asyncio.to_thread(u2.connect, self.serial)
 
-            # 获取并缓存设备分辨率
             try:
                 w, h = await asyncio.to_thread(self.device.window_size)
                 self.device_resolution = (w, h)
             except Exception as e:
                 logger.warning(f"获取设备分辨率失败: {e}")
 
-            # 发送连接确认
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
                     "type": "connected",
@@ -363,12 +353,10 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             # PIL Image对象
             screenshot_image = await asyncio.to_thread(self.device.screenshot)
 
-            # 将PIL Image转换为字节流
             buffer = io.BytesIO()
             await asyncio.to_thread(screenshot_image.save, buffer, format='PNG')
             screenshot_bytes = buffer.getvalue()
 
-            # 转换为base64
             img_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
 
             await self.write_message(json.dumps({
@@ -482,17 +470,14 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             return
 
         try:
-            # 通过ADB客户端获取设备
             self.device = await asyncio.to_thread(u2.connect, self.serial)
 
-            # 获取并缓存设备分辨率
             try:
                 w, h = await asyncio.to_thread(self.device.window_size)
                 self.device_resolution = (w, h)
             except Exception as e:
                 logger.warning(f"获取设备分辨率失败: {e}")
 
-            # 发送连接确认
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
                     "type": "connected",
@@ -558,7 +543,6 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=False)
             hierarchy_xml = xml_data["xml"]
 
-            # 解析XML为结构化数据
             root = ET.fromstring(hierarchy_xml)
             ui_tree = self._parse_ui_tree(root)
 
@@ -614,7 +598,6 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             "children": []
         }
 
-        # 递归处理子元素
         for i, child in enumerate(element):
             child_node = self._parse_ui_tree(child, len(node["children"]))
             node["children"].append(child_node)
@@ -832,7 +815,6 @@ class AndroidProxyServer:
     def _exec(args: list):
         """执行一条 adb 命令（统一二进制，不用 shell）"""
         cmd = [get_adb_bin()] + args
-        # logger.info(" ".join(cmd))
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return proc.stdout.read().decode()
 

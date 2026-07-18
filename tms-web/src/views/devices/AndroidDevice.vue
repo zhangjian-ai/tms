@@ -199,25 +199,20 @@
             </div>
             
             <div v-else class="screen-display">
-              <!-- 投屏视频 -->
-              <video 
+              <!-- 投屏画面（WebCodecs 解码 → canvas） -->
+              <canvas
                 id="screen-player"
-                ref="screenVideo" 
+                ref="screenCanvas"
                 class="screen-video"
                 :style="{ aspectRatio: videoResolution.aspectRatio }"
-                muted 
-                autoplay
-                @loadedmetadata="handleVideoMetadata"
                 @click="handleScreenClick"
-                @mousedown="handleScreenMouseDown"
-                @mousemove="handleScreenMouseMove"
-                @mouseleave="handleScreenMouseLeave"
-                @mouseup="handleScreenMouseUp"
-                @touchstart="handleScreenTouchStart"
-                @touchmove="handleScreenTouchMove"
-                @touchend="handleScreenTouchEnd"
+                @pointerdown="handleScreenPointerDown"
+                @pointermove="handleScreenPointerMove"
+                @pointerup="handleScreenPointerUp"
+                @pointercancel="handleScreenPointerCancel"
+                @pointerleave="handleScreenPointerLeave"
                 @wheel.prevent="handleScreenWheel"
-              ></video>
+              ></canvas>
               
             </div>
           </div>
@@ -309,9 +304,8 @@ import { deviceApi } from '@/api/device.js'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import { useIdleRelease } from '@/composables/useIdleRelease'
-import JMuxer from 'jmuxer'
 import pako from 'pako'
-import { ScrcpyController, Action } from '@/utils/device'
+import { ScrcpyController, Action, WebCodecsPlayer } from '@/utils/device'
 import config from '@/config/index.js'
 
 const genSessionId = () => {
@@ -349,15 +343,14 @@ export default {
     const loading = ref(false)
     const connecting = ref(false)
     const isConnected = ref(false)
-    const wsStatus = ref('disconnected')
-    const deviceName = ref(route.query.name || '未知设备')
-    const screenVideo = ref(null)
+    const screenCanvas = ref(null)
 
     let isMouseDown = false
     let startCoords = null
     let lastMoveTime = 0
     let touchAction = null
     let hasDragged = false
+    let activePointerId = null
     const dragThreshold = 10
 
     const videoResolution = reactive({
@@ -389,7 +382,8 @@ export default {
     let scrcpyWs = null  // 投屏WebSocket
     let controlWs = null // 控制WebSocket
     let inspectorWs = null // 元素检查器WebSocket
-    let jmu = null
+    let player = null
+    let streamFps = 25 // 由 agent 在 stream_started 上报，作为编码帧率的单一来源
 
     const scrcpy = new ScrcpyController()
 
@@ -462,13 +456,12 @@ export default {
         window.elementHoverTimer = null
       }
       stopXmlChangeDetection()
-      if (jmu) {
-        jmu.destroy()
-        jmu = null
+      if (player) {
+        player.close()
+        player = null
       }
       isConnected.value = false
       connecting.value = false
-      wsStatus.value = 'disconnected'
       elementInspectorEnabled.value = false
       selectedElement.value = null
       hoverElement.value = null
@@ -512,7 +505,6 @@ export default {
       }
       
       connecting.value = true
-      wsStatus.value = 'connecting'
 
       connectScrcpyWebSocket()
       connectControlWebSocket()
@@ -530,35 +522,29 @@ export default {
         scrcpy.bind(scrcpyWs)
 
         scrcpyWs.onopen = () => {
-          wsStatus.value = 'connected'
           isConnected.value = true
           connecting.value = false
           ElMessage.success('投屏连接成功')
 
-          nextTick(() => {
-            initMirrorDisplay()
-          })
-
+          // 同步安装 onmessage 再请求推流，避免 stream_started 早于处理器到达而丢失
+          initMirrorDisplay()
           scrcpyWs.send(JSON.stringify({
             type: 'start_stream'
           }))
         }
-        
+
         scrcpyWs.onclose = () => {
-          wsStatus.value = 'disconnected'
           isConnected.value = false
           connecting.value = false
         }
-        
+
         scrcpyWs.onerror = () => {
-          wsStatus.value = 'error'
           connecting.value = false
           ElMessage.error('投屏连接失败')
         }
         
       } catch (error) {
         connecting.value = false
-        wsStatus.value = 'error'
         ElMessage.error('投屏连接失败')
       }
     }
@@ -657,22 +643,19 @@ export default {
       }
 
       try {
-        if (jmu) {
-          jmu.destroy()
-          jmu = null
-        }
-        if (screenVideo.value) {
-          screenVideo.value.src = ''
-          screenVideo.value.load()
+        if (player) {
+          player.close()
+          player = null
         }
       } catch (error) {
         console.error('清理视频资源失败:', error)
       }
 
       isMouseDown = false
+      startCoords = null
+      activePointerId = null
       isConnected.value = false
-      wsStatus.value = 'disconnected'
-      
+
       console.log('所有WebSocket连接已断开')
     }
     
@@ -681,14 +664,17 @@ export default {
         case 'connected':
           break
         case 'stream_started':
+          if (message.fps) {
+            streamFps = message.fps
+          }
           if (message.resolution) {
             const { width, height } = message.resolution
             videoResolution.width = width
             videoResolution.height = height
             videoResolution.aspectRatio = width / height
-            
+
             scrcpy.setResolution(width, height)
-            
+
             nextTick(() => {
               adjustScreenContainer()
             })
@@ -845,29 +831,19 @@ export default {
         if (scrcpyWs) {
           scrcpyWs.onmessage = (event) => {
             if (event.data instanceof ArrayBuffer) {
-              if (!jmu) {
-                if (!screenVideo.value) return
-                jmu = new JMuxer({
-                  node: screenVideo.value,
-                  mode: 'video',
-                  flushingTime: 0,
-                  bufferSize: 2 * 1024 * 1024,
-                  fps: 20,
-                  debug: false,
-                  video: {
-                    codec: 'avc',
-                    width: videoResolution.width,
-                    height: videoResolution.height,
-                    timebase: [1, 1000]
-                  },
-                  onError: (data) => {
-                    console.error('JMuxer错误:', data)
-                    jmu.destroy()
-                    jmu = null
-                  }
+              if (!player) {
+                if (!screenCanvas.value) return
+                if (!WebCodecsPlayer.isSupported()) {
+                  ElMessage.error('当前浏览器不支持实时投屏，请使用 Chrome / Edge')
+                  return
+                }
+                player = new WebCodecsPlayer(screenCanvas.value, {
+                  fps: streamFps,
+                  onResize: (w, h) => syncResolution(w, h),
+                  onError: (e) => console.error('投屏解码错误:', e)
                 })
               }
-              jmu.feed({ video: new Uint8Array(event.data) })
+              player.feed(event.data)
             }
         else {
               try {
@@ -883,25 +859,21 @@ export default {
       }
     }
     
-    const handleVideoMetadata = () => {
-      if (screenVideo.value) {
-        const newWidth = screenVideo.value.videoWidth
-        const newHeight = screenVideo.value.videoHeight
-        
-        if (newWidth && newHeight && (videoResolution.width !== newWidth || videoResolution.height !== newHeight)) {
-          videoResolution.width = newWidth
-          videoResolution.height = newHeight
-          videoResolution.aspectRatio = newWidth / newHeight
-          if (scrcpy) {
-            scrcpy.setResolution(newWidth, newHeight)
-          }
-          nextTick(() => adjustScreenContainer())
+    // 首帧解码后 / 分辨率变化时，用解码器实际尺寸校准（stream_started 为首要来源）
+    const syncResolution = (newWidth, newHeight) => {
+      if (newWidth && newHeight && (videoResolution.width !== newWidth || videoResolution.height !== newHeight)) {
+        videoResolution.width = newWidth
+        videoResolution.height = newHeight
+        videoResolution.aspectRatio = newWidth / newHeight
+        if (scrcpy) {
+          scrcpy.setResolution(newWidth, newHeight)
         }
+        nextTick(() => adjustScreenContainer())
       }
     }
     
     const adjustScreenContainer = () => {
-      const video = screenVideo.value
+      const video = screenCanvas.value
       if (!video || !videoResolution.width || !videoResolution.height) {
         return
       }
@@ -941,14 +913,16 @@ export default {
     }
 
     
-    // 获取触控坐标（兼容鼠标和触摸）
-    const getTouchCoordinates = (event) => {
-      const target = screenVideo.value
+    // 获取触控坐标（兼容鼠标/触摸/指针事件）
+    // clampToBounds=true 时越界坐标钳制到屏幕边缘（用于拖拽，保证滑到边缘且不丢帧）；
+    // 默认 false 时越界返回 null（用于 hover/点击/滚轮等，界外应忽略）
+    const getTouchCoordinates = (event, clampToBounds = false) => {
+      const target = screenCanvas.value
       if (!target) return null
-      
+
       const rect = target.getBoundingClientRect()
       let clientX, clientY
-      
+
       if (event.touches && event.touches.length > 0) {
         clientX = event.touches[0].clientX
         clientY = event.touches[0].clientY
@@ -957,20 +931,23 @@ export default {
         clientY = event.clientY
       }
 
-      const relativeX = clientX - rect.left
-      const relativeY = clientY - rect.top
+      let relativeX = clientX - rect.left
+      let relativeY = clientY - rect.top
       const displayWidth = rect.width
       const displayHeight = rect.height
 
-      if (relativeX < 0 || relativeY < 0 || relativeX > displayWidth || relativeY > displayHeight) {
-        return null
+      const outOfBounds = relativeX < 0 || relativeY < 0 || relativeX > displayWidth || relativeY > displayHeight
+      if (outOfBounds) {
+        if (!clampToBounds) return null
+        relativeX = Math.max(0, Math.min(relativeX, displayWidth))
+        relativeY = Math.max(0, Math.min(relativeY, displayHeight))
       }
-      
-      return { 
-        relativeX, 
-        relativeY, 
-        displayWidth, 
-        displayHeight 
+
+      return {
+        relativeX,
+        relativeY,
+        displayWidth,
+        displayHeight
       }
     }
     
@@ -1080,31 +1057,41 @@ export default {
       scheduleXmlCheck(300)
     }
     
-    // 处理鼠标/触摸开始 - 立即发送ACTION_DOWN
-    const handleScreenMouseDown = (event) => {
+    // 处理指针按下 - 立即发送 ACTION_DOWN，并捕获指针以跟踪越界移动
+    const handleScreenPointerDown = (event) => {
       if (!isConnected.value) return
-      
+      // 只响应主键（鼠标左键 / 触摸 / 笔），忽略右键、中键
+      if (event.button !== undefined && event.button !== 0) return
+      // 已有活动手势时，忽略额外指针（单点镜像，避免多指干扰）
+      if (isMouseDown) return
+
       const coords = getTouchCoordinates(event)
       if (!coords) return
-      
+
+      // 捕获指针：后续 move/up 即使移出 canvas 也会投递到此元素
+      try {
+        screenCanvas.value.setPointerCapture(event.pointerId)
+      } catch (e) { /* 部分环境可能不支持，忽略 */ }
+      activePointerId = event.pointerId
+
       touchAction = null
       hasDragged = false
       isMouseDown = true
       startCoords = coords
-      
+
       sendScrcpyTouch(Action.DOWN, coords)
     }
-    
-    // 处理鼠标/触摸移动 - 拖拽时实时发送ACTION_MOVE
-    const handleScreenMouseMove = (event) => {
 
+    // 处理指针移动 - 未按下时用于元素检查器 hover；按下拖拽时实时发送 ACTION_MOVE
+    const handleScreenPointerMove = (event) => {
+      // hover 路径（仅未按下、开启检查器时）
       if (!isMouseDown && elementInspectorEnabled.value && !connecting.value) {
         const coords = getTouchCoordinates(event)
 
         if (coords && deviceWindowSize.width && deviceWindowSize.height) {
           const oc = toOriginalDeviceCoords(coords)
           if (!oc) return
-          
+
           clearTimeout(window.elementHoverTimer)
           window.elementHoverTimer = setTimeout(() => {
             if (oc.x >= 0 && oc.y >= 0 && oc.x <= deviceWindowSize.width && oc.y <= deviceWindowSize.height) {
@@ -1116,19 +1103,21 @@ export default {
           }, 150)
         }
       }
-      
+
       if (!isConnected.value || !isMouseDown || !startCoords) return
-      
+      if (activePointerId !== null && event.pointerId !== activePointerId) return
+
       const now = Date.now()
       if (now - lastMoveTime < 16) return
       lastMoveTime = now
-      
-      const coords = getTouchCoordinates(event)
+
+      // 拖拽用钳制坐标：越界时跟踪到屏幕边缘，不丢帧
+      const coords = getTouchCoordinates(event, true)
       if (!coords) return
-      
+
       const deltaX = Math.abs(coords.relativeX - startCoords.relativeX)
       const deltaY = Math.abs(coords.relativeY - startCoords.relativeY)
-      
+
       if (deltaX > dragThreshold || deltaY > dragThreshold) {
         if (!hasDragged) {
           hasDragged = true
@@ -1140,39 +1129,60 @@ export default {
 
       sendScrcpyTouch(Action.MOVE, coords)
     }
-    
-    // 处理鼠标/触摸结束 - 立即发送ACTION_UP
-    const handleScreenMouseUp = (event) => {
-      if (!isConnected.value) return
-      
+
+    // 处理指针抬起 - 发送 ACTION_UP 并结束手势
+    const handleScreenPointerUp = (event) => {
+      if (activePointerId !== null && event.pointerId !== activePointerId) return
+      finishTouchGesture(event)
+    }
+
+    // 处理指针取消（触摸被系统中断等）- 兜底抬手，避免设备端手指卡住
+    const handleScreenPointerCancel = (event) => {
+      if (activePointerId !== null && event.pointerId !== activePointerId) return
+      finishTouchGesture(event)
+    }
+
+    // 结束一次触摸手势：发送 UP、释放捕获、分类点击/滑动、复位状态
+    const finishTouchGesture = (event) => {
+      if (!isMouseDown) return
+
       const wasDragging = startCoords && startCoords.isDragging
-      const coords = getTouchCoordinates(event)
-      
+      // 抬手用钳制坐标：界外松手也落在边缘，而非回退到起点
+      const coords = getTouchCoordinates(event, true)
+
       isMouseDown = false
+
+      try {
+        if (activePointerId !== null) {
+          screenCanvas.value.releasePointerCapture(activePointerId)
+        }
+      } catch (e) { /* 忽略 */ }
+      activePointerId = null
 
       if (coords) {
         sendScrcpyTouch(Action.UP, coords)
       } else if (startCoords) {
         sendScrcpyTouch(Action.UP, startCoords)
       }
-      
+
       if (wasDragging && startCoords && coords) {
         touchAction = 'swipe'
         logSwipeEvent(startCoords, coords)
       } else if (!hasDragged && startCoords) {
         touchAction = 'click'
       }
-      
+
       startCoords = null
     }
-    
-    const handleScreenMouseLeave = () => {
-      if (elementInspectorEnabled.value) {
+
+    const handleScreenPointerLeave = () => {
+      // 仅清理检查器 hover 状态；拖拽期间由指针捕获维持，离开元素不影响
+      if (!isMouseDown && elementInspectorEnabled.value) {
         isHovering.value = false
         hoverElement.value = null
       }
     }
-    
+
     // 处理鼠标滚轮 - 映射为设备屏幕滚动
     const handleScreenWheel = (event) => {
       if (!isConnected.value) return
@@ -1183,21 +1193,6 @@ export default {
       const hScroll = event.deltaX !== 0 ? (event.deltaX > 0 ? -1 : 1) : 0
       const vScroll = event.deltaY !== 0 ? (event.deltaY > 0 ? -1 : 1) : 0
       scrcpy.scroll(dc.x, dc.y, hScroll, vScroll)
-    }
-    
-    const handleScreenTouchStart = (event) => {
-      event.preventDefault() // 防止滚动
-      handleScreenMouseDown(event)
-    }
-
-    const handleScreenTouchMove = (event) => {
-      event.preventDefault() // 防止滚动
-      handleScreenMouseMove(event)
-    }
-
-    const handleScreenTouchEnd = (event) => {
-      event.preventDefault()
-      handleScreenMouseUp(event)
     }
 
     const handleHomeKey = () => {
@@ -1295,7 +1290,6 @@ export default {
     }
     
     
-    // 刷新UI层次结构
     const refreshUIHierarchy = async () => {
       if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
         return
@@ -1802,7 +1796,6 @@ export default {
       }
     }
 
-    // 智能XML变化检测
     const scheduleXmlCheck = (delay = 1000) => {
       // 清除之前的定时器
       if (xmlChangeTimer) {
@@ -1812,7 +1805,6 @@ export default {
       waitForPageStability(delay)
     }
 
-    // 开始XML变化检测
     const startXmlChangeDetection = () => {
       if (!elementInspectorEnabled.value) return
 
@@ -1827,7 +1819,6 @@ export default {
       }, 5000) // 每5秒检测一次作为兜底
     }
 
-    // 停止XML变化检测
     const stopXmlChangeDetection = () => {
       // 清理常规检测定时器
       if (xmlChangeTimer) {
@@ -1866,7 +1857,6 @@ export default {
       return socketConnected
     }
 
-    // 判断是否为输入元素
     const isInputElement = (element) => {
       if (!element) return false
       const className = element.class || ''
@@ -1875,7 +1865,6 @@ export default {
              (element.clickable && element.enabled)
     }
     
-    // 显示输入对话框
     const showInputDialog = async () => {
       try {
         const { value } = await ElMessageBox.prompt('请输入文本内容', '文本输入', {
@@ -1972,7 +1961,6 @@ export default {
       }
     }
 
-    // 组件挂载
     onMounted(async () => {
       // 先确认占用再投屏
       const ok = await ensureHold()
@@ -2026,30 +2014,25 @@ export default {
         deviceSessionStore.clearSession(route.params.id)
       }
 
-      // 清理所有定时器
       if (resizeTimer) {
         clearTimeout(resizeTimer)
       }
 
-      // 清理hover定时器
       if (window.elementHoverTimer) {
         clearTimeout(window.elementHoverTimer)
         window.elementHoverTimer = null
       }
 
-      // 停止XML变化检测
       stopXmlChangeDetection()
 
-      if (jmu) {
-        jmu.destroy()
-        jmu = null
+      if (player) {
+        player.close()
+        player = null
       }
 
-      // 移除事件监听
       window.removeEventListener('pagehide', handlePageHide)
       window.removeEventListener('resize', handleWindowResize)
 
-      // 清理状态
       selectedElement.value = null
       hoverElement.value = null
     })
@@ -2058,24 +2041,19 @@ export default {
       loading,
       connecting,
       isConnected,
-      wsStatus,
-      deviceName,
       connectionInfo,
-      screenVideo,
+      screenCanvas,
       videoResolution,
       deviceWindowSize,
       getConnectionInfo,
       connectDevice,
-      handleVideoMetadata,
       adjustScreenContainer,
       handleScreenClick,
-      handleScreenMouseDown,
-      handleScreenMouseMove,
-      handleScreenMouseLeave,
-      handleScreenMouseUp,
-      handleScreenTouchStart,
-      handleScreenTouchMove,
-      handleScreenTouchEnd,
+      handleScreenPointerDown,
+      handleScreenPointerMove,
+      handleScreenPointerUp,
+      handleScreenPointerCancel,
+      handleScreenPointerLeave,
       handleScreenWheel,
       handleHomeKey,
       handleWakeScreen,
@@ -2271,23 +2249,7 @@ export default {
   display: block;
   margin: 0 auto;
   padding: 0;
-}
-
-/* 强制隐藏video控制栏 */
-.screen-video::-webkit-media-controls {
-  display: none !important;
-}
-
-.screen-video::-webkit-media-controls-panel {
-  display: none !important;
-}
-
-.screen-video::-webkit-media-controls-play-button {
-  display: none !important;
-}
-
-.screen-video::-webkit-media-controls-timeline {
-  display: none !important;
+  touch-action: none;
 }
 
 .connection-info-area {

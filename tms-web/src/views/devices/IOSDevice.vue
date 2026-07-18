@@ -154,14 +154,12 @@
                 class="screen-canvas"
                 :width="videoResolution.width"
                 :height="videoResolution.height"
-                @mousedown.prevent="handleMouseDown"
-                @mousemove="handleMouseMove"
-                @mouseup.prevent="handleMouseUp"
-                @mouseleave="handleMouseLeave"
+                @pointerdown="handlePointerDown"
+                @pointermove="handlePointerMove"
+                @pointerup="handlePointerUp"
+                @pointercancel="handlePointerCancel"
+                @pointerleave="handlePointerLeave"
                 @wheel.prevent="handleWheel"
-                @touchstart.prevent="handleTouchStart"
-                @touchmove.prevent="handleTouchMove"
-                @touchend.prevent="handleTouchEnd"
               />
             </div>
           </div>
@@ -289,13 +287,16 @@ let inspectorWs = null
 // 视频分辨率
 const videoResolution = reactive({
   width: 0,
-  height: 0,
-  aspectRatio: 9 / 16
+  height: 0
 })
 
 const screenCanvas = ref(null)
 const videoWrapperRef = ref(null)
 let canvasContext = null
+
+// 投屏帧解码：始终渲染最新帧、丢弃积压帧（与 Android WebCodecs 一致的「画最新」策略）
+let latestFrameBuffer = null
+let frameDecoding = false
 
 const mouseState = reactive({
   isDown: false,
@@ -303,8 +304,7 @@ const mouseState = reactive({
   startY: 0,
   beganAt: null  // 按下时间，用于区分点击/长按
 })
-
-let operationPending = false
+let activePointerId = null  // 指针捕获的活动 pointerId
 
 let wheelDebounceTimer = null
 let wheelAccumulatedY = 0
@@ -462,7 +462,6 @@ const connectControlWebSocket = () => {
     controlWs.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        resolveControlResponse(data)
         handleControlMessage(data)
       } catch (error) {
         console.error('解析控制消息失败:', error)
@@ -525,13 +524,12 @@ const handleControlMessage = (data) => {
         const h = data.device_resolution[1]
         videoResolution.width = w
         videoResolution.height = h
-        videoResolution.aspectRatio = w / h
-        setTimeout(() => {
+        nextTick(() => {
           if (screenCanvas.value) {
             canvasContext = screenCanvas.value.getContext('2d')
           }
-        }, 100)
-        nextTick(() => adjustScreenContainer())
+          adjustScreenContainer()
+        })
       }
       break
     case 'screenshot_result':
@@ -595,48 +593,72 @@ const handleScreenMessage = (data) => {
 
 const renderBinaryFrame = (arrayBuffer) => {
   if (!canvasContext) return
-
-  const blob = new Blob([arrayBuffer], { type: 'image/jpeg' })
-  const url = URL.createObjectURL(blob)
-
-  const img = new Image()
-  img.onload = () => {
-    canvasContext.drawImage(img, 0, 0, videoResolution.width, videoResolution.height)
-    URL.revokeObjectURL(url)  // 释放内存
-  }
-  img.onerror = () => {
-    URL.revokeObjectURL(url)
-  }
-  img.src = url
+  // 只保留最新帧；若正在解码则直接替换待渲染帧，解码完再取最新，避免积压导致延迟累积
+  latestFrameBuffer = arrayBuffer
+  if (frameDecoding) return
+  frameDecoding = true
+  ;(async () => {
+    while (latestFrameBuffer) {
+      const buf = latestFrameBuffer
+      latestFrameBuffer = null
+      try {
+        // createImageBitmap 在后台线程解码 JPEG，无 objectURL/Image 开销，延迟与 GC 都更低
+        const bitmap = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }))
+        if (canvasContext) {
+          canvasContext.drawImage(bitmap, 0, 0, videoResolution.width, videoResolution.height)
+        }
+        bitmap.close()
+      } catch (e) {
+        // 单帧解码失败直接丢弃
+      }
+    }
+    frameDecoding = false
+  })()
 }
 
-const getEventDeviceCoords = (clientX, clientY) => {
+const getEventDeviceCoords = (clientX, clientY, clampToBounds = false) => {
   const canvas = screenCanvas.value
   if (!canvas || !videoResolution.width || !videoResolution.height) return null
   const rect = canvas.getBoundingClientRect()
   if (rect.width <= 0 || rect.height <= 0) return null
   const scaleX = videoResolution.width / rect.width
   const scaleY = videoResolution.height / rect.height
-  const x = (clientX - rect.left) * scaleX
-  const y = (clientY - rect.top) * scaleY
-  if (x < 0 || y < 0 || x > videoResolution.width || y > videoResolution.height) return null
+  let x = (clientX - rect.left) * scaleX
+  let y = (clientY - rect.top) * scaleY
+  const outOfBounds = x < 0 || y < 0 || x > videoResolution.width || y > videoResolution.height
+  if (outOfBounds) {
+    // 拖拽/抬手时钳制到屏幕边缘（保证滑到边、界外松手不误判为点击）；其余情况越界忽略
+    if (!clampToBounds) return null
+    x = Math.max(0, Math.min(x, videoResolution.width))
+    y = Math.max(0, Math.min(y, videoResolution.height))
+  }
   return { x: Math.round(x), y: Math.round(y) }
 }
 
-const handleMouseDown = (event) => {
-  if (!isConnected.value || operationPending) return
-  event.preventDefault()
+// 指针按下 - 记录起点并捕获指针，使后续 move/up 即使移出 canvas 仍投递到此元素
+const handlePointerDown = (event) => {
+  if (!isConnected.value) return
+  // 只响应主键（鼠标左键 / 触摸 / 笔）；已有活动手势时忽略额外指针
+  if (event.button !== undefined && event.button !== 0) return
+  if (mouseState.isDown) return
+
   const coords = getEventDeviceCoords(event.clientX, event.clientY)
   if (!coords) return
+
+  try {
+    screenCanvas.value.setPointerCapture(event.pointerId)
+  } catch (e) { /* 忽略 */ }
+  activePointerId = event.pointerId
+
   mouseState.isDown = true
   mouseState.startX = coords.x
   mouseState.startY = coords.y
   mouseState.beganAt = Date.now()
 }
 
-const handleMouseMove = (event) => {
-  // 未按下且启用元素检查器时进行元素查找
-  if (!mouseState.isDown && elementInspectorEnabled.value && !operationPending) {
+const handlePointerMove = (event) => {
+  // 未按下且启用元素检查器时进行元素查找（hover 越界忽略，用严格坐标）
+  if (!mouseState.isDown && elementInspectorEnabled.value) {
     const coords = getEventDeviceCoords(event.clientX, event.clientY)
     if (coords && videoResolution.width && videoResolution.height) {
       if (elementHoverTimer) {
@@ -652,71 +674,59 @@ const handleMouseMove = (event) => {
       }, 150)
     }
   }
-
-  if (!isConnected.value || !mouseState.isDown) return
-  // WDA 仅支持 tap/swipe，拖动过程不发送中间点
+  // 按下拖拽过程：WDA 仅支持 tap/swipe，不发送中间点
 }
 
-const handleMouseLeave = () => {
-  if (elementInspectorEnabled.value) {
+const handlePointerLeave = () => {
+  // 仅在未按下时清理检查器 hover；拖拽期间由指针捕获维持，离开元素不影响
+  if (!mouseState.isDown && elementInspectorEnabled.value) {
     hoverElement.value = null
   }
-  if (!operationPending) {
-    mouseState.isDown = false
-  }
 }
 
-const handleMouseUp = (event) => {
-  if (!isConnected.value || !mouseState.isDown || operationPending) return
-  event.preventDefault()
+const handlePointerUp = (event) => {
+  if (activePointerId !== null && event.pointerId !== activePointerId) return
+  finishGesture(event)
+}
 
-  const coords = getEventDeviceCoords(event.clientX, event.clientY)
+const handlePointerCancel = (event) => {
+  if (activePointerId !== null && event.pointerId !== activePointerId) return
+  finishGesture(event)
+}
+
+const finishGesture = (event) => {
+  if (!mouseState.isDown) return
+
+  // 终点钳制坐标：界外松手落在边缘，而非回退起点被误判成点击
+  const coords = getEventDeviceCoords(event.clientX, event.clientY, true)
   const endX = coords ? coords.x : mouseState.startX
   const endY = coords ? coords.y : mouseState.startY
   const moveX = Math.abs(endX - mouseState.startX)
   const moveY = Math.abs(endY - mouseState.startY)
   const duration = Date.now() - mouseState.beganAt
 
+  // 先复位状态并释放捕获，避免中途断连时输入被永久锁死
   mouseState.isDown = false
+  try {
+    if (activePointerId !== null) {
+      screenCanvas.value.releasePointerCapture(activePointerId)
+    }
+  } catch (e) { /* 忽略 */ }
+  activePointerId = null
 
-  // 禁用触摸，等待 WDA 响应后恢复
-  disableCanvasTouch()
+  if (!isConnected.value) return
 
-  let promise
   if (moveX < 10 && moveY < 10) {
     if (duration < 200) {
-      promise = sendClick(mouseState.startX, mouseState.startY)
+      sendClick(mouseState.startX, mouseState.startY)
     } else {
-      promise = sendLongClick(mouseState.startX, mouseState.startY, duration)
+      sendLongClick(mouseState.startX, mouseState.startY, duration)
     }
   } else {
-    promise = sendSwipe(mouseState.startX, mouseState.startY, endX, endY)
-  }
-
-  promise.finally(() => {
-    enableCanvasTouch()
-  })
-}
-
-const disableCanvasTouch = () => {
-  operationPending = true
-  const canvas = screenCanvas.value
-  if (canvas) {
-    canvas.style.pointerEvents = 'none'
-    canvas.style.cursor = 'not-allowed'
+    sendSwipe(mouseState.startX, mouseState.startY, endX, endY)
   }
 }
 
-const enableCanvasTouch = () => {
-  operationPending = false
-  const canvas = screenCanvas.value
-  if (canvas) {
-    canvas.style.pointerEvents = ''
-    canvas.style.cursor = ''
-  }
-}
-
-// 鼠标滚轮 → swipe 手势
 const handleWheel = (event) => {
   if (!isConnected.value) return
 
@@ -762,22 +772,6 @@ const handleWheel = (event) => {
   }, 150)
 }
 
-const handleTouchStart = (event) => {
-  if (event.touches.length === 0) return
-  handleMouseDown({ clientX: event.touches[0].clientX, clientY: event.touches[0].clientY, preventDefault: () => {} })
-}
-
-const handleTouchMove = (event) => {
-  if (event.touches.length === 0) return
-  // 仅保持按下状态，不发送中间点
-}
-
-const handleTouchEnd = (event) => {
-  if (event.changedTouches.length === 0) return
-  const t = event.changedTouches[0]
-  handleMouseUp({ clientX: t.clientX, clientY: t.clientY, preventDefault: () => {} })
-}
-
 const sendClick = (x, y) => {
   if (elementInspectorEnabled.value) {
     const logData = {
@@ -793,20 +787,11 @@ const sendClick = (x, y) => {
     scheduleXmlCheck(300)
   }
 
-  return new Promise((resolve) => {
-    pendingResolve = resolve
-    sendControlMessage({ type: 'click', x, y })
-    // 超时兜底
-    setTimeout(resolve, 5000)
-  })
+  sendControlMessage({ type: 'click', x, y })
 }
 
 const sendLongClick = (x, y, duration) => {
-  return new Promise((resolve) => {
-    pendingResolve = resolve
-    sendControlMessage({ type: 'long_click', x, y, duration: duration / 1000 })
-    setTimeout(resolve, 5000)
-  })
+  sendControlMessage({ type: 'long_click', x, y, duration: duration / 1000 })
 }
 
 // 发送滑动 - duration 100ms
@@ -828,30 +813,14 @@ const sendSwipe = (startX, startY, endX, endY) => {
     scheduleXmlCheck(300)
   }
 
-  return new Promise((resolve) => {
-    pendingResolve = resolve
-    sendControlMessage({
-      type: 'swipe',
-      start_x: startX,
-      start_y: startY,
-      end_x: endX,
-      end_y: endY,
-      duration: 0.1
-    })
-    setTimeout(resolve, 5000)
+  sendControlMessage({
+    type: 'swipe',
+    start_x: startX,
+    start_y: startY,
+    end_x: endX,
+    end_y: endY,
+    duration: 0.1
   })
-}
-
-// 等待 WDA 操作完成的回调
-let pendingResolve = null
-
-const resolveControlResponse = (msg) => {
-  const resultTypes = ['click_result', 'long_click_result', 'swipe_result']
-  if (resultTypes.includes(msg.type) && pendingResolve) {
-    const resolve = pendingResolve
-    pendingResolve = null
-    resolve()
-  }
 }
 
 const handleScreenshot = () => {
@@ -1081,7 +1050,6 @@ const decompressXml = async (data) => {
   }
 }
 
-// 生成 XML 哈希（用于检测变化）
 const generateXmlHash = (xmlString) => {
   if (!xmlString) return ''
   let hash = 0
@@ -1521,6 +1489,7 @@ onBeforeUnmount(() => {
   height: 100%;
   cursor: crosshair;
   background-color: #000;
+  touch-action: none;
 }
 
 /* 操作日志面板样式 */

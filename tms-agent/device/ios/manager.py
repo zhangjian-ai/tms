@@ -36,7 +36,7 @@ class IOSDeviceState:
 
 
 class IOSDeviceManager:
-    """iOS 设备管理器（go-ios，支持 iOS 17+）"""
+    """iOS 设备管理器"""
 
     # 连续多少次未在 go-ios list 中出现才判定离线
     OFFLINE_MISS_THRESHOLD = 3

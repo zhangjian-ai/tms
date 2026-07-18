@@ -49,16 +49,6 @@ class AdbClient:
     async def read_bytes(self, n: int) -> bytes:
         return await self._conn.read_bytes(n)
 
-    async def read_bytes_until(self, delimiter: bytes, max_bytes: int = None) -> bytes:
-        """读取字节直到遇到指定的分隔符"""
-        if max_bytes is not None:
-            return await self._conn.read_until(delimiter=delimiter, max_bytes=max_bytes)
-        else:
-            return await self._conn.read_until(delimiter=delimiter)
-
-    async def read_utils(self, delimiter: str, max_bytes: int) -> bytes:
-        return await self._conn.read_until(delimiter=delimiter.encode("utf8"), max_bytes=max_bytes)
-
     async def check_okay(self):
         data = await self.read_bytes(4)
         if data == b'FAIL':

@@ -25,9 +25,9 @@ ios:
 
     wait_for_idle_timeout: 0        # 关闭每次操作前的 idle 等待（控制提速主开关）
     animation_cool_off_timeout: 0
-    mjpeg_scaling_factor: 50         # MJPEG 帧缩放百分比，50=缩到一半 → 带宽约 1/4
-    mjpeg_server_framerate: 20
-    mjpeg_server_quality: 40         # MJPEG JPEG 质量 0-100
+    mjpeg_scaling_factor: 65         # MJPEG 帧缩放百分比（越大越清晰、带宽/设备编码开销越高）
+    mjpeg_server_framerate: 25       # 与代理端 TARGET_FPS(25) 对齐，避免两级限速不一致
+    mjpeg_server_quality: 60         # MJPEG JPEG 质量 0-100（USB 连接带宽充足，可适当提高清晰度）
 
   proxy:  # web端与agent交互时的访问地址
     host: 0.0.0.0

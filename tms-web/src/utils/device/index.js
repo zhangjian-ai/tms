@@ -19,3 +19,5 @@ export {
   buildTextPacket,
   buildScrollPacket
 } from './scrcpy.js'
+
+export { WebCodecsPlayer } from './h264-player.js'
