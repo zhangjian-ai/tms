@@ -32,6 +32,7 @@ class IOSDeviceState:
     cast: bool = False      # 占用是否允许投屏（控制 9100 MJPEG 是否启动）
     info_reported: bool = False  # device_info 是否已上报
     recovering: bool = False  # 是否正在后台恢复 WDA
+    init_task: "asyncio.Task" = None  # 正在跑的 start_proxy 初始化任务（供 stop_proxy 取消）
     last_seen: datetime = field(default_factory=datetime.now)
 
 
@@ -48,6 +49,9 @@ class IOSDeviceManager:
         self.ws: Optional[websocket.WebSocketClientConnection] = None
         self._locks: Dict[str, asyncio.Lock] = {}  # 每设备串行化 start/stop_proxy
         self._idb_lock = asyncio.Lock()  # 串行化所有阻塞 go-ios 调用（见 _idb_call）
+
+        # 清理上次 agent 遗留的 runwda/forward 孤儿进程（否则多份 forward 抢 8100/9100 致投屏 reset）
+        self.idb.reap_stale()
 
         # iOS 17+ 需要常驻 RSD 隧道（需 root）
         self.tunnel_process: Optional[subprocess.Popen] = None
@@ -83,6 +87,10 @@ class IOSDeviceManager:
         self._terminate(device.wda_runner)
         self._terminate(device.wda_forward)
         self._terminate(device.mjpeg_forward)
+        # 清掉 _spawn 遗留的临时日志文件
+        self.idb.cleanup_spawn_log(device.wda_runner)
+        self.idb.cleanup_spawn_log(device.wda_forward)
+        self.idb.cleanup_spawn_log(device.mjpeg_forward)
         device.wda_runner = None
         device.wda_forward = None
         device.mjpeg_forward = None
@@ -139,6 +147,8 @@ class IOSDeviceManager:
                 return await device.wda_client.create_session()
             finally:
                 device.recovering = False
+                if device.init_task is asyncio.current_task():
+                    device.init_task = None
 
     async def sync(self):
         """同步设备状态到服务端（3秒轮询）"""
@@ -209,7 +219,8 @@ class IOSDeviceManager:
                         logger.warning(f"WDA 连续失联，后台恢复（保留投屏）: {udid}")
                         # 后台任务恢复：_wait_wda_ready 最长 30s，不能 await 在轮询里
                         device.recovering = True
-                        asyncio.create_task(self._recover_wda(udid, device))
+                        # 记入 init_task：恢复期同样持锁，释放时须能被 stop_proxy 取消
+                        device.init_task = asyncio.create_task(self._recover_wda(udid, device))
 
                 for udid in offline_udids:
                     self.devices.pop(udid, None)
@@ -255,39 +266,61 @@ class IOSDeviceManager:
         if not udid:
             return
         if mtype == "start_proxy":
-            asyncio.create_task(self.start_proxy(udid, bool(data.get("cast", False))))
+            task = asyncio.create_task(self.start_proxy(udid, bool(data.get("cast", False))))
+            # 记录初始化任务，供 stop_proxy 在其持锁等待 WDA 时取消（避免释放被锁阻塞）
+            device = self.devices.get(udid)
+            if device is not None:
+                device.init_task = task
         elif mtype == "stop_proxy":
             asyncio.create_task(self.stop_proxy(udid))
 
     async def start_proxy(self, udid: str, cast: bool = False):
         """占用时启动 WDA 代理。cast=True 时额外启动 9100 MJPEG 投屏转发。幂等。"""
-        async with self._lock_for(udid):
-            device = self.devices.get(udid)
-            if device is None or not device.online:
-                logger.warning(f"启动代理失败：iOS 设备不在线 {udid}")
-                return
-            device.cast = cast
-            if device.init:
-                # 已起代理：按本次 cast 调整投屏转发
-                if cast and not device.mjpeg_forward:
-                    await self._start_mjpeg(udid, device)
-                elif not cast and device.mjpeg_forward:
-                    self._terminate(device.mjpeg_forward)
-                    device.mjpeg_forward = None
-                    device.mjpeg_port = 0
+        try:
+            async with self._lock_for(udid):
+                device = self.devices.get(udid)
+                if device is None or not device.online:
+                    logger.warning(f"启动代理失败：iOS 设备不在线 {udid}")
+                    return
+                device.cast = cast
+                if device.init:
+                    # 已起代理：按本次 cast 调整投屏转发
+                    if cast and not device.mjpeg_forward:
+                        await self._start_mjpeg(udid, device)
+                    elif not cast and device.mjpeg_forward:
+                        self._terminate(device.mjpeg_forward)
+                        device.mjpeg_forward = None
+                        device.mjpeg_port = 0
+                    device.occupied = True
+                    return
+                # 先置占用，init 失败再回退
                 device.occupied = True
-                return
-            # 先置占用，init 失败再回退
-            device.occupied = True
-            if not await self._init_device(udid, device, cast=cast):
-                device.occupied = False
+                if not await self._init_device(udid, device, cast=cast):
+                    device.occupied = False
+        except asyncio.CancelledError:
+            # 被 stop_proxy 取消（释放/关页）：资源交由 stop_proxy 持锁清理
+            logger.info(f"iOS 设备 {udid} 初始化被取消（释放）")
+            raise
+        finally:
+            device = self.devices.get(udid)
+            if device is not None and device.init_task is asyncio.current_task():
+                device.init_task = None
 
     async def stop_proxy(self, udid: str):
         """释放时停止 WDA 代理与投屏转发。幂等。"""
+        device = self.devices.get(udid)
+        if device is None:
+            return
+        # 初始化任务可能正持锁做最长 30s 的 WDA 就绪等待，须先取消再抢锁，否则本协程被锁阻塞
+        task = device.init_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
         async with self._lock_for(udid):
-            device = self.devices.get(udid)
-            if device is None:
-                return
+            device.init_task = None
             await self._cleanup_device(device)
             device.occupied = False
             device.cast = False
@@ -313,14 +346,25 @@ class IOSDeviceManager:
 
             runner = device.wda_runner
             if runner is not None and runner.poll() is not None:
-                logger.error(f"runwda 进程已退出(code={runner.returncode})，WDA 未在设备上运行: {udid}")
+                log_tail = self.idb.read_spawn_log(runner)
+                logger.error(
+                    f"runwda 进程已退出(code={runner.returncode})，WDA 未在设备上运行: {udid}"
+                    + (f"\ngo-ios 输出: {log_tail}" if log_tail else "")
+                )
                 return False
 
             if device.wda_client and await device.wda_client.health_check():
                 return True
             logger.debug(f"等待 WDA 就绪... {waited}/{timeout}s ({udid})")
 
-        logger.error(f"WDA 就绪超时({timeout}s): {udid}")
+        # 超时：把 forward / runwda 的真实输出打出来，便于定位隧道/转发失败
+        fwd_tail = self.idb.read_spawn_log(device.wda_forward)
+        runner_tail = self.idb.read_spawn_log(device.wda_runner)
+        logger.error(
+            f"WDA 就绪超时({timeout}s): {udid}"
+            + (f"\nforward 输出: {fwd_tail}" if fwd_tail else "")
+            + (f"\nrunwda 输出: {runner_tail}" if runner_tail else "")
+        )
         return False
 
     async def _init_device(self, udid: str, device: IOSDeviceState, cast: bool = False) -> bool:
@@ -328,6 +372,10 @@ class IOSDeviceManager:
 
         WDA(8100)+会话总是启动；MJPEG(9100) 仅在 cast=True 时启动。
         """
+        # 起代理前先清掉本设备残留的 runwda/forward（按 udid 精确匹配，不影响其它在用设备），
+        # 避免旧转发抢 8100/9100 导致 Connection reset
+        await asyncio.to_thread(self.idb.reap_stale, udid)
+
         # 检查 WDA 是否已安装
         if not await self._idb_call(self.idb.get_wda_status, udid):
             logger.warning(f"设备 {udid} WDA 未就绪（未安装或暂不可达），跳过初始化")

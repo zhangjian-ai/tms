@@ -35,6 +35,15 @@
             </el-descriptions>
           </el-card>
 
+          <!-- 应用管理面板 -->
+          <DeviceAppPanel
+            v-if="appManagerEnabled"
+            :proxy-host="connectionInfo.proxyHost"
+            :proxy-port="connectionInfo.proxyPort"
+            :serial="deviceSerial"
+            platform="ios"
+          />
+
           <el-card v-if="elementInspectorEnabled" class="info-card">
             <template #header>
               <div class="card-header">
@@ -130,6 +139,15 @@
               :title="elementInspectorEnabled ? '关闭元素检查器' : '开启元素检查器'"
             >
               <el-icon><Search /></el-icon>
+            </el-button>
+            <el-button
+              size="small"
+              @click="toggleAppManager"
+              class="control-btn"
+              :type="appManagerEnabled ? 'primary' : ''"
+              :title="appManagerEnabled ? '关闭应用管理' : '应用管理'"
+            >
+              <el-icon><Grid /></el-icon>
             </el-button>
           </div>
         </div>
@@ -241,8 +259,9 @@
 import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Camera, Document, Loading, Sunny, HomeFilled, Monitor, Search, Delete, InfoFilled } from '@element-plus/icons-vue'
+import { Camera, Document, Loading, Sunny, HomeFilled, Monitor, Search, Delete, InfoFilled, Grid } from '@element-plus/icons-vue'
 import { deviceApi } from '@/api/device'
+import DeviceAppPanel from '@/views/devices/DeviceAppPanel.vue'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import { useIdleRelease } from '@/composables/useIdleRelease'
@@ -316,6 +335,7 @@ let holdWs = null
 let holdHeartbeatTimer = null
 
 const elementInspectorEnabled = ref(false)
+const appManagerEnabled = ref(false)     // 应用管理面板开关（与检查器互斥）
 const operationLogs = ref([])
 const hoverElement = ref(null)
 const uiHierarchy = ref(null)
@@ -413,6 +433,10 @@ const adjustScreenContainer = () => {
     if (screenArea) {
       screenArea.style.maxWidth = `${targetWidth + 24}px`
       screenArea.style.width = 'auto'
+      // 左侧栏高度对齐投屏区，使应用管理面板底边与投屏底边一致
+      if (connectionArea) {
+        connectionArea.style.height = `${screenArea.offsetHeight}px`
+      }
     }
   } catch (e) {
     console.error('adjustScreenContainer:', e)
@@ -894,6 +918,8 @@ const teardownAndRelease = async () => {
   if (screenWs) screenWs.close()
   if (inspectorWs) inspectorWs.close()
   isConnected.value = false
+  elementInspectorEnabled.value = false
+  appManagerEnabled.value = false
   return true
 }
 
@@ -995,30 +1021,60 @@ const handleInspectorMessage = (data) => {
   }
 }
 
+// 关闭元素检查器并清理其状态
+const closeElementInspector = () => {
+  elementInspectorEnabled.value = false
+  hoverElement.value = null
+  uiHierarchy.value = null
+  if (inspectorWs) {
+    inspectorWs.close()
+    inspectorWs = null
+  }
+}
+
 const toggleElementInspector = async () => {
-  elementInspectorEnabled.value = !elementInspectorEnabled.value
   if (elementInspectorEnabled.value) {
-    if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
-      try {
-        await connectInspectorWebSocket()
-        // 连接成功后立即获取一次 UI 层次
-        refreshUIHierarchy()
-      } catch (error) {
-        console.error('连接元素检查器失败:', error)
-        ElMessage.error('元素检查器连接失败')
-        elementInspectorEnabled.value = false
-      }
-    } else {
+    closeElementInspector()
+    return
+  }
+  if (appManagerEnabled.value) {
+    try {
+      await ElMessageBox.confirm('应用管理已开启，切换到元素检查器？', '提示', { type: 'warning' })
+    } catch {
+      return
+    }
+    appManagerEnabled.value = false
+  }
+  elementInspectorEnabled.value = true
+  if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
+    try {
+      await connectInspectorWebSocket()
+      // 连接成功后立即获取一次 UI 层次
       refreshUIHierarchy()
+    } catch (error) {
+      console.error('连接元素检查器失败:', error)
+      ElMessage.error('元素检查器连接失败')
+      elementInspectorEnabled.value = false
     }
   } else {
-    hoverElement.value = null
-    uiHierarchy.value = null
-    if (inspectorWs) {
-      inspectorWs.close()
-      inspectorWs = null
-    }
+    refreshUIHierarchy()
   }
+}
+
+const toggleAppManager = async () => {
+  if (appManagerEnabled.value) {
+    appManagerEnabled.value = false
+    return
+  }
+  if (elementInspectorEnabled.value) {
+    try {
+      await ElMessageBox.confirm('元素检查器已开启，切换到应用管理？', '提示', { type: 'warning' })
+    } catch {
+      return
+    }
+    closeElementInspector()
+  }
+  appManagerEnabled.value = true
 }
 
 const refreshUIHierarchy = () => {
@@ -1365,7 +1421,17 @@ onBeforeUnmount(() => {
 
 .info-content {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
+}
+
+/* 应用管理面板填满连接信息卡片下方的剩余空间，使其底边与投屏区底边对齐 */
+.info-content .app-manager-card {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
 }
 
 .info-card {

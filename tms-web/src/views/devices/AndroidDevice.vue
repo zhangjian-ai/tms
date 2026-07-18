@@ -41,7 +41,16 @@
               </el-descriptions-item>
             </el-descriptions>
           </el-card>
-          
+
+          <!-- 应用管理面板 -->
+          <DeviceAppPanel
+            v-if="appManagerEnabled"
+            :proxy-host="connectionInfo.proxyHost"
+            :proxy-port="connectionInfo.proxyPort"
+            :serial="connectionInfo.serial"
+            platform="android"
+          />
+
           <!-- 元素属性面板 -->
           <el-card v-if="elementInspectorEnabled" class="info-card">
             <template #header>
@@ -167,14 +176,24 @@
               <el-icon><Document /></el-icon>
             </el-button>
 
-            <el-button 
-              type="warning" 
-              size="small" 
+            <el-button
+              type="warning"
+              size="small"
               @click="toggleElementInspector"
               class="control-btn"
               :title="elementInspectorEnabled ? '关闭元素检查器' : '开启元素检查器'"
             >
               <el-icon><Search /></el-icon>
+            </el-button>
+
+            <el-button
+              size="small"
+              @click="toggleAppManager"
+              class="control-btn"
+              :type="appManagerEnabled ? 'primary' : ''"
+              :title="appManagerEnabled ? '关闭应用管理' : '应用管理'"
+            >
+              <el-icon><Grid /></el-icon>
             </el-button>
           </div>
         </div>
@@ -299,8 +318,9 @@
 import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Monitor, Camera, HomeFilled, Document, Sunny, Search, InfoFilled, Delete } from '@element-plus/icons-vue'
+import { Monitor, Camera, HomeFilled, Document, Sunny, Search, InfoFilled, Delete, Grid } from '@element-plus/icons-vue'
 import { deviceApi } from '@/api/device.js'
+import DeviceAppPanel from '@/views/devices/DeviceAppPanel.vue'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import { useIdleRelease } from '@/composables/useIdleRelease'
@@ -325,7 +345,9 @@ export default {
     Sunny,
     Search,
     InfoFilled,
-    Delete
+    Delete,
+    Grid,
+    DeviceAppPanel
   },
   setup() {
     const route = useRoute()
@@ -388,6 +410,7 @@ export default {
     const scrcpy = new ScrcpyController()
 
     const elementInspectorEnabled = ref(false)
+    const appManagerEnabled = ref(false)     // 应用管理面板开关（与检查器互斥）
     const operationLogs = ref([])       // 操作日志记录
     const selectedElement = ref(null)   // 点击选中的元素
     const hoverElement = ref(null)      // hover的元素
@@ -463,6 +486,7 @@ export default {
       isConnected.value = false
       connecting.value = false
       elementInspectorEnabled.value = false
+      appManagerEnabled.value = false
       selectedElement.value = null
       hoverElement.value = null
       uiHierarchy.value = null
@@ -906,6 +930,11 @@ export default {
         if (screenArea) {
           screenArea.style.maxWidth = `${targetWidth + 24}px`
           screenArea.style.width = 'auto'
+          // 左侧栏高度对齐投屏区，使应用管理面板底边与投屏底边一致
+          const connectionArea = document.querySelector('.connection-info-area')
+          if (connectionArea) {
+            connectionArea.style.height = `${screenArea.offsetHeight}px`
+          }
         }
       } catch (error) {
         console.error('容器调整失败:', error)
@@ -1270,23 +1299,54 @@ export default {
     
     // ============= 元素检查器相关函数 =============
 
-    const toggleElementInspector = () => {
-      elementInspectorEnabled.value = !elementInspectorEnabled.value
+    // 关闭元素检查器并清理其状态
+    const closeElementInspector = () => {
+      elementInspectorEnabled.value = false
+      if (inspectorWs) {
+        inspectorWs.close()
+        inspectorWs = null
+      }
+      stopXmlChangeDetection()
+      selectedElement.value = null
+      hoverElement.value = null
+      uiHierarchy.value = null
+      lastXmlHash.value = ''
+    }
 
-      if (elementInspectorEnabled.value && connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
+    const toggleElementInspector = async () => {
+      if (elementInspectorEnabled.value) {
+        closeElementInspector()
+        return
+      }
+      if (appManagerEnabled.value) {
+        try {
+          await ElMessageBox.confirm('应用管理已开启，切换到元素检查器？', '提示', { type: 'warning' })
+        } catch {
+          return
+        }
+        appManagerEnabled.value = false
+      }
+      elementInspectorEnabled.value = true
+      if (connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
         connectInspectorWebSocket()
         startXmlChangeDetection()
-      } else if (!elementInspectorEnabled.value) {
-        if (inspectorWs) {
-          inspectorWs.close()
-          inspectorWs = null
-        }
-        stopXmlChangeDetection()
-        selectedElement.value = null
-        hoverElement.value = null
-        uiHierarchy.value = null
-        lastXmlHash.value = ''
       }
+    }
+
+    const toggleAppManager = async () => {
+      if (appManagerEnabled.value) {
+        appManagerEnabled.value = false
+        return
+      }
+      if (elementInspectorEnabled.value) {
+        try {
+          await ElMessageBox.confirm('元素检查器已开启，切换到应用管理？', '提示', { type: 'warning' })
+        } catch {
+          return
+        }
+        closeElementInspector()
+      }
+      appManagerEnabled.value = true
     }
     
     
@@ -2070,6 +2130,9 @@ export default {
       hoverElement,
       uiHierarchy,
       toggleElementInspector,
+      // 应用管理
+      appManagerEnabled,
+      toggleAppManager,
       refreshUIHierarchy,
       isInputElement,
       showInputDialog,
@@ -2277,7 +2340,15 @@ export default {
   gap: 16px;
   width: 100%;
   max-width: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: hidden; /* 防止内容溢出 */
+}
+
+/* 应用管理面板填满连接信息卡片下方的剩余空间，使其底边与投屏区底边对齐 */
+.info-content .app-manager-card {
+  flex: 1;
+  min-height: 0;
 }
 
 .info-card {

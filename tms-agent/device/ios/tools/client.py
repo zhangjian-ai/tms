@@ -66,9 +66,12 @@ class WDAClient:
     async def health_check(self) -> bool:
         """健康检查：GET /status"""
         try:
-            response = await self._request("GET", "/status", timeout=3.0)
+            response = await self._request("GET", "/status", timeout=10.0)
+            if response.code != 200:
+                logger.debug(f"WDA /status 非 200: code={response.code} body={response.body!r}")
             return response.code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug(f"WDA /status 请求异常: {e}")
             return False
 
     async def create_session(self) -> bool:

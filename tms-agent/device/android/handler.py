@@ -8,6 +8,7 @@ import subprocess
 
 import tornado.web
 import tornado.ioloop
+import tornado.httpserver
 from typing import Any
 import tornado.websocket
 from logzero import logger
@@ -19,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 from device.android.scrcpy import scrcpy_manager
 from device.android.tools.adb import get_adb_bin
+from device.android.apps import AndroidAppsHandler, AndroidAppUninstallHandler, AndroidAppInstallHandler
 from utils.variables import settings
 
 
@@ -827,17 +829,22 @@ class AndroidProxyServer:
         self._exec(["-a", "-P", port, "start-server"])
 
     def make_app(self):
-        """创建Tornado应用 - 三个WebSocket接口"""
-        # 注入设备管理器
+        """创建Tornado应用 - WebSocket 投屏/控制/检查器 + HTTP 应用管理"""
         if self.device_manager:
             ScrcpyWebSocket.device_manager = self.device_manager
             DeviceControlWebSocket.device_manager = self.device_manager
             ElementInspectorWebSocket.device_manager = self.device_manager
+            AndroidAppsHandler.device_manager = self.device_manager
+            AndroidAppUninstallHandler.device_manager = self.device_manager
+            AndroidAppInstallHandler.device_manager = self.device_manager
 
         return tornado.web.Application([
             (r"/devices/([^/]+)/scrcpy", ScrcpyWebSocket),  # scrcpy投屏WebSocket
             (r"/devices/([^/]+)/control", DeviceControlWebSocket),  # 设备控制WebSocket
-            (r"/devices/([^/]+)/inspector", ElementInspectorWebSocket)  # 元素检查器WebSocket
+            (r"/devices/([^/]+)/inspector", ElementInspectorWebSocket),  # 元素检查器WebSocket
+            (r"/devices/([^/]+)/apps", AndroidAppsHandler),  # 应用列表
+            (r"/devices/([^/]+)/apps/uninstall", AndroidAppUninstallHandler),  # 卸载应用
+            (r"/devices/([^/]+)/apps/install", AndroidAppInstallHandler),  # 安装应用
         ], debug=self.config['proxy']['debug'])
 
     def run(self):
@@ -846,5 +853,7 @@ class AndroidProxyServer:
         port = self.config['proxy']['port']
         logger.info(f"启动Android代理服务: {host}: {port}")
 
-        self.app.listen(port, address=host)
+        # 显式 HTTPServer 以放开安装包(APK)上传体积上限
+        server = tornado.httpserver.HTTPServer(self.app, max_body_size=2 * 1024 * 1024 * 1024)
+        server.listen(port, address=host)
         logger.info("Android设备代理服务器已启动! 🚀")

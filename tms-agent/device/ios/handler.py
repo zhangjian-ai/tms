@@ -7,6 +7,7 @@ import time
 import urllib.request
 import tornado.web
 import tornado.ioloop
+import tornado.httpserver
 import tornado.websocket
 from logzero import logger
 from typing import Any
@@ -16,6 +17,7 @@ from datetime import datetime
 from PIL import Image
 
 from device.ios.tools.client import WDAClient
+from device.ios.apps import IOSAppsHandler, IOSAppUninstallHandler, IOSAppInstallHandler
 from utils.variables import settings
 
 
@@ -738,17 +740,22 @@ class IOSProxyServer:
         self.app = self.make_app()
 
     def make_app(self):
-        """创建 Tornado 应用 - 三个 WebSocket 接口"""
-        # 将设备管理器传递给 WebSocket handler
+        """创建 Tornado 应用 - WebSocket 投屏/控制/检查器 + HTTP 应用管理"""
         if self.device_manager:
             IOSScreenStreamWebSocket.device_manager = self.device_manager
             IOSDeviceControlWebSocket.device_manager = self.device_manager
             IOSElementInspectorWebSocket.device_manager = self.device_manager
+            IOSAppsHandler.device_manager = self.device_manager
+            IOSAppUninstallHandler.device_manager = self.device_manager
+            IOSAppInstallHandler.device_manager = self.device_manager
 
         return tornado.web.Application([
             (r"/devices/([^/]+)/screen", IOSScreenStreamWebSocket),      # 投屏
             (r"/devices/([^/]+)/control", IOSDeviceControlWebSocket),    # 控制
             (r"/devices/([^/]+)/inspector", IOSElementInspectorWebSocket),  # 元素检查器
+            (r"/devices/([^/]+)/apps", IOSAppsHandler),                  # 应用列表
+            (r"/devices/([^/]+)/apps/uninstall", IOSAppUninstallHandler),  # 卸载应用
+            (r"/devices/([^/]+)/apps/install", IOSAppInstallHandler),    # 安装应用
         ], debug=self.config['proxy']['debug'])
 
     def run(self):
@@ -757,5 +764,7 @@ class IOSProxyServer:
         port = self.config['proxy']['port']
         logger.info(f"启动 iOS 代理服务: {host}:{port}")
 
-        self.app.listen(port, address=host)
+        # 显式 HTTPServer 以放开安装包(IPA)上传体积上限
+        server = tornado.httpserver.HTTPServer(self.app, max_body_size=2 * 1024 * 1024 * 1024)
+        server.listen(port, address=host)
         logger.info("iOS 设备代理服务器已启动! 🚀")
