@@ -193,13 +193,16 @@ class IOSDeviceManager:
                 offline_udids = []
                 for udid, device in list(self.devices.items()):
                     if not device.online:
-                        # 后台恢复任务在跑时先不清理，推迟到下一轮
-                        if device.recovering:
+                        lock = self._lock_for(udid)
+                        # 有 start/stop/恢复 正持锁时推迟清理到下轮：绝不在轮询里等锁，
+                        # 避免被最长 30s 的 WDA 初始化阻塞整个设备轮询。
+                        if lock.locked():
                             continue
-                        # 先上报离线，再清理资源
+                        # 未上锁时 acquire 立即返回、不会挂起，故清理短暂且不阻塞
                         await self.ws.write_message({"type": "status", "serial": udid, "status": "offline"})
                         offline_udids.append(udid)
-                        await self._cleanup_device(device)
+                        async with lock:
+                            await self._cleanup_device(device)
                         continue
 
                     # WDA 会话保活：仅对已占用设备执行，连续多次失败才恢复（不动 MJPEG 投屏）
@@ -289,7 +292,15 @@ class IOSDeviceManager:
                     device.occupied = True
                     return
                 device.occupied = True
-                if not await self._init_device(udid, device, cast=cast):
+                try:
+                    ok = await self._init_device(udid, device, cast=cast)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"iOS 设备 {udid} 初始化异常: {e}")
+                    ok = False
+                if not ok:
+                    await self._cleanup_device(device)
                     device.occupied = False
         except asyncio.CancelledError:
             # 被 stop_proxy 取消（释放/关页）：资源交由 stop_proxy 持锁清理
@@ -314,6 +325,9 @@ class IOSDeviceManager:
             except BaseException:
                 pass
         async with self._lock_for(udid):
+            device = self.devices.get(udid)
+            if device is None:
+                return
             device.init_task = None
             await self._cleanup_device(device)
             device.occupied = False

@@ -52,76 +52,48 @@
           />
 
           <!-- 元素属性面板 -->
-          <el-card v-if="elementInspectorEnabled" class="info-card">
+          <el-card v-if="elementInspectorEnabled" class="info-card inspector-card">
             <template #header>
               <div class="card-header">
                 <h3>元素属性</h3>
               </div>
             </template>
             <div class="properties-content">
-              <div v-if="selectedElement || hoverElement" class="element-info">
+              <div v-if="hoverElement" class="element-info">
                 <el-descriptions :column="1" border size="small">
                   <el-descriptions-item label="类名">
-                    {{ (selectedElement || hoverElement)?.class || '-' }}
+                    {{ hoverElement?.class || '-' }}
                   </el-descriptions-item>
                   <el-descriptions-item label="文本">
-                    {{ (selectedElement || hoverElement)?.text || '-' }}
+                    {{ hoverElement?.text || '-' }}
                   </el-descriptions-item>
                   <el-descriptions-item label="资源ID">
-                    {{ (selectedElement || hoverElement)?.resource_id || '-' }}
+                    {{ hoverElement?.resource_id || '-' }}
                   </el-descriptions-item>
                   <el-descriptions-item label="内容描述">
-                    {{ (selectedElement || hoverElement)?.content_desc || '-' }}
+                    {{ hoverElement?.content_desc || '-' }}
                   </el-descriptions-item>
                   <el-descriptions-item label="坐标">
-                    {{ (selectedElement || hoverElement)?.bounds || '-' }}
+                    {{ hoverElement?.bounds || '-' }}
                   </el-descriptions-item>
                   <el-descriptions-item label="可点击">
-                    <el-tag :type="(selectedElement || hoverElement)?.clickable ? 'success' : 'info'" size="small">
-                      {{ (selectedElement || hoverElement)?.clickable ? '是' : '否' }}
+                    <el-tag :type="hoverElement?.clickable ? 'success' : 'info'" size="small">
+                      {{ hoverElement?.clickable ? '是' : '否' }}
                     </el-tag>
                   </el-descriptions-item>
                   <el-descriptions-item label="可用">
-                    <el-tag :type="(selectedElement || hoverElement)?.enabled ? 'success' : 'danger'" size="small">
-                      {{ (selectedElement || hoverElement)?.enabled ? '是' : '否' }}
+                    <el-tag :type="hoverElement?.enabled ? 'success' : 'danger'" size="small">
+                      {{ hoverElement?.enabled ? '是' : '否' }}
                     </el-tag>
                   </el-descriptions-item>
                   <el-descriptions-item label="可滚动">
-                    <el-tag :type="(selectedElement || hoverElement)?.scrollable ? 'success' : 'info'" size="small">
-                      {{ (selectedElement || hoverElement)?.scrollable ? '是' : '否' }}
+                    <el-tag :type="hoverElement?.scrollable ? 'success' : 'info'" size="small">
+                      {{ hoverElement?.scrollable ? '是' : '否' }}
                     </el-tag>
                   </el-descriptions-item>
                 </el-descriptions>
-                
-                <!-- 元素操作按钮 -->
-                <div class="element-actions" v-if="selectedElement && (selectedElement.clickable || selectedElement.enabled)">
-                  <el-button 
-                    size="small" 
-                    type="primary" 
-                    @click="performElementAction('click')"
-                    :disabled="!selectedElement.clickable"
-                  >
-                    点击
-                  </el-button>
-                  <el-button 
-                    size="small" 
-                    type="warning" 
-                    @click="performElementAction('long_click')"
-                    :disabled="!selectedElement.clickable"
-                  >
-                    长按
-                  </el-button>
-                  <el-button 
-                    v-if="isInputElement(selectedElement)"
-                    size="small" 
-                    type="success" 
-                    @click="showInputDialog"
-                  >
-                    输入文本
-                  </el-button>
-                </div>
               </div>
-              
+
               <div v-else class="no-selection">
                 <el-icon size="24"><InfoFilled /></el-icon>
                 <p>请点击或悬停选择元素</p>
@@ -410,11 +382,10 @@ export default {
     const elementInspectorEnabled = ref(false)
     const appManagerEnabled = ref(false)     // 应用管理面板开关（与检查器互斥）
     const operationLogs = ref([])
-    const selectedElement = ref(null)
     const hoverElement = ref(null)
     const uiHierarchy = ref(null)
     const lastXmlHash = ref('')
-    let xmlChangeTimer = null
+    let xmlCheckTimer = null
 
     const getConnectionInfo = async () => {
       try {
@@ -475,7 +446,7 @@ export default {
         clearTimeout(window.elementHoverTimer)
         window.elementHoverTimer = null
       }
-      stopXmlChangeDetection()
+      stopXmlRefresh()
       if (player) {
         player.close()
         player = null
@@ -484,7 +455,6 @@ export default {
       connecting.value = false
       elementInspectorEnabled.value = false
       appManagerEnabled.value = false
-      selectedElement.value = null
       hoverElement.value = null
       uiHierarchy.value = null
       operationLogs.value = []
@@ -739,13 +709,6 @@ export default {
             console.error('获取UI层次失败:', message.error)
           }
           break
-        case 'element_action_result':
-          if (message.success) {
-            ElMessage.success(`操作成功: ${message.data.result}`)
-          } else {
-            ElMessage.error(`操作失败: ${message.error}`)
-          }
-          break
         case 'error':
           ElMessage.error(`检查器错误: ${message.message}`)
           break
@@ -809,23 +772,6 @@ export default {
             }
           } else {
             ElMessage.error('UI层次结构获取失败：' + (message.error || '未知错误'))
-          }
-          break
-        case 'xml_only':
-          // 处理仅XML内容的响应（用于页面变化检测）
-          if (message.success && message.data && message.data.xml) {
-            decompressXml(message.data).then(xmlContent => {
-              if (stabilityCheckTimer !== null || stabilityCheckCount > 0) {
-                handleStabilityXmlResponse(xmlContent)
-              } else {
-                const currentXmlHash = generateXmlHash(xmlContent)
-                if (currentXmlHash && currentXmlHash !== lastXmlHash.value) {
-                  refreshUIHierarchy()
-                }
-              }
-            }).catch(error => {
-              console.error('处理XML数据失败:', error)
-            })
           }
           break
         case 'error':
@@ -1112,12 +1058,9 @@ export default {
           clearTimeout(window.elementHoverTimer)
           window.elementHoverTimer = setTimeout(() => {
             if (oc.x >= 0 && oc.y >= 0 && oc.x <= deviceWindowSize.width && oc.y <= deviceWindowSize.height) {
-              if (!uiHierarchy.value) {
-                scheduleXmlCheck(100)
-              }
               findElementAtPosition(oc.x, oc.y)
             }
-          }, 250)
+          }, 150)
         }
       }
 
@@ -1293,8 +1236,7 @@ export default {
         inspectorWs.close()
         inspectorWs = null
       }
-      stopXmlChangeDetection()
-      selectedElement.value = null
+      stopXmlRefresh()
       hoverElement.value = null
       uiHierarchy.value = null
       lastXmlHash.value = ''
@@ -1316,7 +1258,6 @@ export default {
       elementInspectorEnabled.value = true
       if (connectionInfo.proxyHost && connectionInfo.proxyPort && connectionInfo.serial) {
         connectInspectorWebSocket()
-        startXmlChangeDetection()
       }
     }
 
@@ -1337,11 +1278,10 @@ export default {
     }
     
     
-    const refreshUIHierarchy = async () => {
+    const refreshUIHierarchy = () => {
       if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
         return
       }
-
       try {
         inspectorWs.send(JSON.stringify({
           type: 'get_ui_hierarchy'
@@ -1538,25 +1478,6 @@ export default {
     }
 
 
-    const performElementAction = (action, text = '') => {
-      if (!selectedElement.value || !inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
-        ElMessage.error('未选择元素或检查器未连接')
-        return
-      }
-
-      const message = {
-        type: 'element_action',
-        element: selectedElement.value,
-        action: action
-      }
-
-      if (text) {
-        message.text = text
-      }
-
-      inspectorWs.send(JSON.stringify(message))
-    }
-
     const addOperationLog = (action, logData) => {
       if (!elementInspectorEnabled.value) return
 
@@ -1648,278 +1569,24 @@ export default {
       return hash.toString()
     }
 
-    // 获取当前XML并检测变化
-    const checkXmlChange = async () => {
-      if (!monitorWebSocketConnection()) {
-        return
-      }
+    // ============= UI 层次刷新 =============
 
-      try {
-        sendControlMessage({
-          type: 'get_xml_only'  // 只获取XML内容，不解析树结构
-        })
-      } catch (error) {
-        console.error('获取XML失败:', error)
-        // 连接异常时尝试重连
-        if (elementInspectorEnabled.value) {
-          setTimeout(() => {
-            connectInspectorWebSocket()
-          }, 2000)
-        }
-      }
-    }
-
-    // 页面稳定性检测状态
-    let stabilityCheckTimer = null
-    let stabilityCheckCount = 0
-    let lastStabilityHash = null
-    let consecutiveStableCount = 0
-    let xmlRequestRetryCount = 0
-    const MAX_STABILITY_CHECKS = 12
-    const MAX_XML_RETRY = 3
-    const REQUIRED_STABLE_COUNT = 2
-
-    // 等待页面稳定的XML检测（基准XML存储在web端）
-    const waitForPageStability = (initialDelay = 1000) => {
-      if (stabilityCheckTimer) {
-        clearTimeout(stabilityCheckTimer)
-        stabilityCheckTimer = null
-      }
-
-      stabilityCheckCount = 0
-      consecutiveStableCount = 0
-      xmlRequestRetryCount = 0
-
-      // 使用当前的XML hash作为基准（如果存在）
-      if (lastXmlHash.value) {
-        lastStabilityHash = lastXmlHash.value
-        setTimeout(() => {
-          checkPageStability()
-        }, initialDelay + 1000)
-      } else {
-        // 没有基准XML时先获取一次
-        setTimeout(() => {
-          getBaselineXmlForStability()
-        }, initialDelay + 1000)
-      }
-    }
-
-    // 获取稳定性检测的基准XML - 仅在没有基准时使用
-    const getBaselineXmlForStability = () => {
-      try {
-        sendControlMessage({
-          type: 'get_xml_only'
-        })
-
-        // 1秒后开始第一次对比检测
-        stabilityCheckTimer = setTimeout(() => {
-          checkPageStability()
-        }, 1000)
-        
-      } catch (error) {
-        console.error('获取基准XML失败:', error)
-        // 重试机制
-        if (xmlRequestRetryCount < MAX_XML_RETRY) {
-          xmlRequestRetryCount++
-          setTimeout(() => {
-            getBaselineXmlForStability()
-          }, 2000) // 2秒后重试
-        }
-      }
-    }
-    
-    // 检测页面是否稳定
-    const checkPageStability = () => {
-      if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
-        console.error('WebSocket连接异常，停止稳定性检测')
-        return
-      }
-      
-      if (stabilityCheckCount >= MAX_STABILITY_CHECKS) {
-        console.warn('稳定性检测达到最大次数，使用最后一次XML更新UI')
-        // 达到最大检测次数，停止检测并清理状态
-        if (stabilityCheckTimer) {
-          clearTimeout(stabilityCheckTimer)
-          stabilityCheckTimer = null
-        }
-        
-        // 重置检测状态
-        stabilityCheckCount = 0
-        consecutiveStableCount = 0
-        xmlRequestRetryCount = 0
-        
-        // 如果有最后一次的XML hash且与当前不同，则刷新UI
-        if (lastStabilityHash && lastStabilityHash !== lastXmlHash.value) {
-          console.log('使用最后一次XML更新UI层次')
-          refreshUIHierarchy()
-        } else {
-          console.log('最后一次XML与当前相同，无需更新')
-        }
-        
-        // 清理稳定性hash
-        lastStabilityHash = null
-        return
-      }
-      
-      stabilityCheckCount++
-      
-      try {
-        // 使用control WebSocket获取XML进行对比
-        sendControlMessage({
-          type: 'get_xml_only'
-        })
-        
-        // 统一使用1秒检测间隔
-        const nextInterval = 1000
-        
-        // 设置下次检测
-        stabilityCheckTimer = setTimeout(() => {
-          checkPageStability()
-        }, nextInterval)
-        
-      } catch (error) {
-        console.error('稳定性检测失败:', error)
-        // 网络异常时也尝试重试
-        if (xmlRequestRetryCount < MAX_XML_RETRY) {
-          xmlRequestRetryCount++
-          setTimeout(() => {
-            checkPageStability()
-          }, 2000)
-        }
-      }
-    }
-    
-    // 处理稳定性检测的XML响应（基准XML存储在web端）
-    const handleStabilityXmlResponse = (xmlContent) => {
-      const currentHash = generateXmlHash(xmlContent)
-      
-      if (lastStabilityHash === null) {
-        // 这是基准XML，记录hash并更新全局基准
-        lastStabilityHash = currentHash
-        lastXmlHash.value = currentHash // 同时更新全局XML hash
-        consecutiveStableCount = 0
-        return false // 等待下次对比
-      }
-      
-      // 这是对比XML
-      if (currentHash === lastStabilityHash) {
-        // Hash相同，页面可能稳定
-        consecutiveStableCount++
-        
-        // 需要连续稳定多次才认为真正稳定
-        if (consecutiveStableCount >= REQUIRED_STABLE_COUNT) {
-          // 停止稳定性检测
-          if (stabilityCheckTimer) {
-            clearTimeout(stabilityCheckTimer)
-            stabilityCheckTimer = null
-          }
-          
-          // 重置检测状态
-          stabilityCheckCount = 0
-          lastStabilityHash = null
-          consecutiveStableCount = 0
-          xmlRequestRetryCount = 0
-          
-          // 如果XML确实发生了变化，刷新UI层次
-          if (currentHash !== lastXmlHash.value) {
-            refreshUIHierarchy()
-          } 
-          
-          return true // 页面已稳定
-        } else {
-          // 继续确认稳定性
-          return false // 继续检测
-        }
-      } else {
-        // Hash不同，页面仍在变化
-        lastStabilityHash = currentHash
-        consecutiveStableCount = 0 // 重置连续稳定计数
-        console.log(`页面仍在变化，重置稳定计数`)
-        return false // 继续检测
-      }
-    }
-
-    const scheduleXmlCheck = (delay = 1000) => {
-      // 稳定性检测自管理 stabilityCheckTimer；不要在此清除 xmlChangeTimer（那是兜底轮询的 interval）
-      waitForPageStability(delay)
-    }
-
-    const startXmlChangeDetection = () => {
+    // 操作后延时刷新一次（去抖），等待界面稳定
+    const scheduleXmlCheck = (delay = 300) => {
       if (!elementInspectorEnabled.value) return
-
-      xmlChangeTimer = setInterval(() => {
-        checkXmlChange()
-
-        // UI层次为空但连接正常时强制刷新
-        if (!uiHierarchy.value && monitorWebSocketConnection()) {
-          console.warn('检测到UI层次为空但连接正常，强制刷新')
-          refreshUIHierarchy()
-        }
-      }, 5000) // 每5秒检测一次作为兜底
+      if (xmlCheckTimer) clearTimeout(xmlCheckTimer)
+      xmlCheckTimer = setTimeout(() => {
+        refreshUIHierarchy()
+      }, delay)
     }
 
-    const stopXmlChangeDetection = () => {
-      // 清理常规检测定时器
-      if (xmlChangeTimer) {
-        clearInterval(xmlChangeTimer)
-        xmlChangeTimer = null
-      }
-      
-      // 清理稳定性检测定时器
-      if (stabilityCheckTimer) {
-        clearTimeout(stabilityCheckTimer)
-        stabilityCheckTimer = null
-      }
-      
-      // 重置稳定性检测状态
-      stabilityCheckCount = 0
-      lastStabilityHash = null
-      consecutiveStableCount = 0
-      xmlRequestRetryCount = 0
-    }
-    
-    // WebSocket连接状态监控
-    const monitorWebSocketConnection = () => {
-      if (!inspectorWs) return false
-
-      const socketConnected = inspectorWs.readyState === WebSocket.OPEN
-      if (!socketConnected) {
-        console.warn('WebSocket连接异常，状态:', inspectorWs.readyState)
-        // 尝试重新连接
-        if (elementInspectorEnabled.value) {
-          setTimeout(() => {
-            connectInspectorWebSocket()
-          }, 3000) // 3秒后重连
-        }
-      }
-      return socketConnected
-    }
-
-    const isInputElement = (element) => {
-      if (!element) return false
-      const className = element.class || ''
-      return className.includes('EditText') ||
-             className.includes('TextField') ||
-             (element.clickable && element.enabled)
-    }
-    
-    const showInputDialog = async () => {
-      try {
-        const { value } = await ElMessageBox.prompt('请输入文本内容', '文本输入', {
-          confirmButtonText: '确定',
-          cancelButtonText: '取消',
-          inputPattern: /.+/,
-          inputErrorMessage: '请输入有效的文本内容'
-        })
-        
-        if (value) {
-          performElementAction('input_text', value)
-        }
-      } catch (error) {
-        // 用户取消输入，不做处理
+    const stopXmlRefresh = () => {
+      if (xmlCheckTimer) {
+        clearTimeout(xmlCheckTimer)
+        xmlCheckTimer = null
       }
     }
-    
+
     // 设备占用心跳 - 每5秒发送一次
     const startHoldHeartbeat = () => {
       stopHoldHeartbeat()
@@ -2061,7 +1728,7 @@ export default {
         window.elementHoverTimer = null
       }
 
-      stopXmlChangeDetection()
+      stopXmlRefresh()
 
       if (player) {
         player.close()
@@ -2071,7 +1738,6 @@ export default {
       window.removeEventListener('pagehide', handlePageHide)
       window.removeEventListener('resize', handleWindowResize)
 
-      selectedElement.value = null
       hoverElement.value = null
     })
     
@@ -2104,7 +1770,6 @@ export default {
       // 元素检查器相关
       elementInspectorEnabled,
       operationLogs,
-      selectedElement,
       hoverElement,
       uiHierarchy,
       toggleElementInspector,
@@ -2112,14 +1777,10 @@ export default {
       appManagerEnabled,
       toggleAppManager,
       refreshUIHierarchy,
-      isInputElement,
-      showInputDialog,
-      performElementAction,
       clearOperationLogs,
       formatTime,
       copyToClipboard,
-      scheduleXmlCheck,
-      waitForPageStability
+      scheduleXmlCheck
     }
   }
 }
@@ -2307,6 +1968,20 @@ export default {
 .info-content .app-manager-card {
   flex: 1;
   min-height: 0;
+}
+
+/* 元素属性卡片填满剩余空间；属性过多时在卡片体内滚动，不再撑高整列盖住连接信息 */
+.inspector-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .info-card {

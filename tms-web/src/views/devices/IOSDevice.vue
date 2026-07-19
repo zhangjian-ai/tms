@@ -44,7 +44,7 @@
             platform="ios"
           />
 
-          <el-card v-if="elementInspectorEnabled" class="info-card">
+          <el-card v-if="elementInspectorEnabled" class="info-card inspector-card">
             <template #header>
               <div class="card-header">
                 <h3>元素信息</h3>
@@ -341,8 +341,6 @@ const hoverElement = ref(null)
 const uiHierarchy = ref(null)
 let xmlCheckTimer = null
 const lastXmlHash = ref('')
-let xmlPending = false   // 已发出 get_xml_only、尚未收到响应，避免请求堆积
-let lastXmlRefresh = 0   // 上次刷新 UI 树的时间戳
 let lastHoverMatch = 0   // 上次 hover 元素匹配的时间戳
 
 const getWDAUrl = () => {
@@ -682,13 +680,12 @@ const handlePointerDown = (event) => {
 }
 
 const handlePointerMove = (event) => {
-  // 未按下且启用元素检查器时进行元素查找（hover 越界忽略，用严格坐标）
+  // 未按下且启用元素检查器时进行元素查找（仅对缓存树做本地命中测试，不触发 dump）
   if (!mouseState.isDown && elementInspectorEnabled.value) {
     const coords = getEventDeviceCoords(event.clientX, event.clientY)
     if (coords && videoResolution.width && videoResolution.height) {
-      maybeRefreshHierarchy()
       const now = Date.now()
-      if (now - lastHoverMatch >= 250) {
+      if (now - lastHoverMatch >= 150) {
         lastHoverMatch = now
         findElementAtPosition(coords.x, coords.y)
       }
@@ -811,6 +808,9 @@ const sendClick = (x, y) => {
 }
 
 const sendLongClick = (x, y, duration) => {
+  if (elementInspectorEnabled.value) {
+    scheduleXmlCheck(300)
+  }
   sendControlMessage({ type: 'long_click', x, y, duration: duration / 1000 })
 }
 
@@ -852,6 +852,9 @@ const handleDumpXml = () => {
 
 const handleHomeKey = () => {
   sendControlMessage({ type: 'home' })
+  if (elementInspectorEnabled.value) {
+    scheduleXmlCheck(500)
+  }
 }
 
 const handleWakeScreen = () => {
@@ -995,7 +998,6 @@ const handleInspectorMessage = (data) => {
       break
     case 'ui_hierarchy':
     case 'xml_only':
-      xmlPending = false
       if (data.success && data.data && data.data.xml) {
         decompressXml(data.data).then(xmlContent => {
           const currentXmlHash = generateXmlHash(xmlContent)
@@ -1074,18 +1076,7 @@ const toggleAppManager = async () => {
 
 const refreshUIHierarchy = () => {
   if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) return
-  xmlPending = true
-  lastXmlRefresh = Date.now()
   inspectorWs.send(JSON.stringify({ type: 'get_xml_only' }))
-}
-
-// 节流刷新 UI 树：距上次刷新超过 800ms 且无进行中的请求时才重新拉取，避免慢速 get_source 堆积
-const maybeRefreshHierarchy = () => {
-  const now = Date.now()
-  // 兜底：pending 超过 3s 视为响应丢失，允许重发
-  if (xmlPending && now - lastXmlRefresh < 3000) return
-  if (now - lastXmlRefresh < 800) return
-  refreshUIHierarchy()
 }
 
 const decompressXml = async (data) => {
@@ -1455,6 +1446,21 @@ onBeforeUnmount(() => {
 
 .element-inspector-content {
   min-height: 200px;
+}
+
+/* 元素信息卡片填满连接信息下方剩余空间；属性过多时在卡片体内滚动，不再撑高整列盖住连接信息 */
+.inspector-card {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .no-selection {

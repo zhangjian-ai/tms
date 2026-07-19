@@ -47,11 +47,12 @@ class ScrcpyManager:
                 logger.warning(f"设备 {serial} 已在其他页面投屏，拒绝新的投屏请求")
                 return False
 
-            scrcpy_device.ws_client_list.append(ws_client)
-
             async with scrcpy_device.async_lock:
+                # 先停掉可能残留的旧流（含自然断流后未回收的 socket）；此时列表为空，
+                # stop() 的断连通知不会误关下面新加入的客户端。
                 if scrcpy_device.video_data_transfer:
                     await scrcpy_device.stop()
+                scrcpy_device.ws_client_list.append(ws_client)
                 await scrcpy_device.prepare()
             return True
         except Exception as e:
