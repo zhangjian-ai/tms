@@ -1,6 +1,5 @@
 import os
 import json
-import tempfile
 import subprocess
 
 from typing import List, Dict, Optional
@@ -50,20 +49,25 @@ class Idb:
 
     @classmethod
     def reap_stale(cls, udid: str = None):
-        """
-        清理遗留的 runwda/forward 子进程。
-        """
+        """清理遗留的 runwda/forward 子进程；传 udid 则只清该设备（tunnel 不动）。"""
         prefix, _ = cls._sudo()
-        # 命令行形如：<ios> --udid=<udid> {runwda|forward} ...；按 udid 精确匹配
         scope = f"--udid={udid}.*" if udid else ""
         for kind in ("runwda", "forward"):
             pattern = f"{GO_IOS_BIN}.*{scope}{kind}"
             try:
-                # pkill 无匹配返回 1，不算失败
                 cls._run(prefix + ["pkill", "-f", pattern], timeout=5)
             except Exception as e:
                 logger.warning(f"清理残留 go-ios 进程失败 ({pattern}): {e}")
-        logger.info(f"已清理遗留 go-ios runwda/forward 进程 (udid={udid or 'ALL'})")
+
+    @classmethod
+    def kill_all(cls):
+        """agent 启动时清理全部遗留 go-ios 进程（含 tunnel），随后由 agent 重新拉起。"""
+        prefix, _ = cls._sudo()
+        try:
+            cls._run(prefix + ["pkill", "-f", GO_IOS_BIN], timeout=5)
+        except Exception as e:
+            logger.warning(f"清理遗留 go-ios 进程失败: {e}")
+        logger.info("已清理全部遗留 go-ios 进程")
 
     @classmethod
     def _run_json(cls, args: List[str], timeout: int = 10) -> Optional[dict]:
@@ -89,66 +93,27 @@ class Idb:
 
     @classmethod
     def _spawn(cls, extra_args: List[str], udid: str = None) -> Optional[subprocess.Popen]:
-        """启动长驻 go-ios 子进程（tunnel/runwda/forward）；非 root 时经 sudo 并把密码写入 stdin。
-
-        stdout/stderr 合并写入每进程独立临时文件（而非 DEVNULL），既避免管道缓冲阻塞，
-        又能在 forward/runwda 启动失败时回读真实报错。文件路径记在 process._go_ios_log。
-        """
+        """启动长驻 go-ios 子进程（tunnel/runwda/forward）；非 root 时经 sudo 并把密码写入 stdin。"""
         _, pw = cls._sudo()
-        cmd = cls._base(udid) + extra_args
-        logger.debug(f"spawn go-ios: {' '.join(cmd)}")
         try:
-            log_file = tempfile.NamedTemporaryFile(
-                mode="w+", prefix="goios-", suffix=".log", delete=False
-            )
             process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT, text=True,
-            )
-            process._go_ios_log = log_file.name  # 供失败诊断回读
-            log_file.close()  # 子进程已持有自身 fd，父进程副本可关闭
+                cls._base(udid) + extra_args,
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+
             if pw:
-                try:
-                    process.stdin.write(pw)
-                    process.stdin.flush()
-                except Exception as e:
-                    logger.error(f"向 sudo 写入密码失败: {e}")
+                process.stdin.write(pw)
+                process.stdin.flush()
             else:
-                # root 场景关闭 stdin
-                try:
-                    process.stdin.close()
-                except Exception:
-                    pass
+                process.stdin.close()
+
             return process
         except Exception as e:
             logger.error(f"启动 go-ios 子进程失败 {extra_args}: {e}")
             return None
 
-    @staticmethod
-    def read_spawn_log(process: Optional[subprocess.Popen], tail_chars: int = 2000) -> str:
-        """回读 _spawn 进程的输出尾部（用于失败诊断）。无则返回空串。"""
-        path = getattr(process, "_go_ios_log", None) if process else None
-        if not path:
-            return ""
-        try:
-            with open(path, "r", errors="replace") as f:
-                return f.read()[-tail_chars:].strip()
-        except Exception:
-            return ""
-
-    @staticmethod
-    def cleanup_spawn_log(process: Optional[subprocess.Popen]):
-        """删除 _spawn 进程遗留的临时日志文件。"""
-        path = getattr(process, "_go_ios_log", None) if process else None
-        if path:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
     def list_devices(self) -> List[Dict]:
-        """列出 USB 直连设备：ios list --details。
-
+        """
+        列出 USB 直连设备：ios list --details。
         用 --details 拿 ConnectionType，只保留 "USB"，过滤 Wi‑Fi 同步残留的网络设备。
         """
         data = self._run_json(self._base() + ["list", "--details"], timeout=5)
@@ -210,7 +175,7 @@ class Idb:
             udid=udid,
         )
         if process:
-            logger.info(f"WDA开始启动: {udid} ({wda_bundle_id})")
+            logger.info(f"WDA 已启动: {udid} ({wda_bundle_id})")
         return process
 
     def forward(self, udid: str, local_port: int, device_port: int) -> Optional[subprocess.Popen]:

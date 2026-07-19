@@ -3,9 +3,9 @@ import json
 import asyncio
 import tempfile
 import subprocess
+import tornado.web
 
 from logzero import logger
-import tornado.web
 
 from utils.http import CorsRequestHandler
 from device.android.tools.adb import adb_cmd
@@ -20,9 +20,8 @@ async def _run_adb(args, serial=None, timeout=60):
 
 
 async def list_apps(serial: str) -> list:
-    """列出可管理应用：仅三方应用(pm list packages -3)，系统应用不返回。
-
-    Android 无廉价 label，name 退化为包名。
+    """
+    列出可管理应用：仅三方应用(pm list packages -3)，系统应用不返回
     """
     result = await _run_adb(["shell", "pm", "list", "packages", "-3"], serial=serial, timeout=15)
     if result.returncode != 0:
@@ -87,8 +86,8 @@ class AndroidAppUninstallHandler(_AppBaseHandler):
             return self.write_json(err[0], {"ok": False, "error": err[1]})
         try:
             body = json.loads(self.request.body or b"{}")
-        except Exception:
-            return self.write_json(400, {"ok": False, "error": "请求体非法"})
+        except Exception as e:
+            return self.write_json(400, {"ok": False, "error": str(e)})
         pkg = (body.get("id") or "").strip()
         if not pkg:
             return self.write_json(400, {"ok": False, "error": "缺少 id"})
@@ -151,3 +150,7 @@ class AndroidAppInstallHandler(_AppBaseHandler):
                 pass
         self._tmp = None
         self._tmp_path = None
+
+    def on_connection_close(self):
+        # 客户端上传中途断开时 post 不会执行，在此清理临时文件
+        self._cleanup()

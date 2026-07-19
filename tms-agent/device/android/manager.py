@@ -168,14 +168,12 @@ class AndroidDeviceManager:
             try:
                 await self._ensure_ws()
 
-                # 安装接入工具
                 if not device.init:
                     if await asyncio.to_thread(self.installer.install_to_device, serial):
                         device.init = True
                     else:
                         logger.error(f"接入工具安装失败（adb 仍可用）: {serial}")
 
-                # 启动 Tcp2Usb 代理
                 if not device.t2u:
                     t2u = Tcp2Usb(serial, self.host, self.port)
                     t2u.start()
@@ -255,7 +253,7 @@ class AndroidDeviceManager:
                 "serial": serial,
                 "brand": brand,
                 "model": model,
-                "device_sys": "android",  # 默认为android
+                "device_sys": "android",
                 "os_version": os_version,
                 "width": width,
                 "height": height
@@ -267,20 +265,17 @@ class AndroidDeviceManager:
             logger.error(f"获取设备信息失败 {adb_device.serial}: {e}")
 
     def get_connection_info(self, device: DeviceState):
-        """
-        从ADB设备获取基础信息
-        """
+        """获取设备连接信息"""
         try:
-            adb_host = self.report_host
-            if adb_host == "0.0.0.0":
-                adb_host = Host.get()
+            host = Host.get()
+            adb_host = self.report_host if self.report_host != "0.0.0.0" else host
 
             info = {
                 "adb_host": adb_host,
                 "adb_port": self.port,
-                "proxy_host": Host.get(),
+                "proxy_host": host,
                 "proxy_port": self.config["proxy"]["port"],
-                "connection": f"{Host.get()}:{device.t2u.proxy_port}"
+                "connection": f"{host}:{device.t2u.proxy_port}"
             }
 
             return info

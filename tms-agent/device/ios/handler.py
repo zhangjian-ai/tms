@@ -21,6 +21,11 @@ from device.ios.apps import IOSAppsHandler, IOSAppUninstallHandler, IOSAppInstal
 from utils.variables import settings
 
 
+def _encode_source(xml: str) -> str:
+    """gzip 压缩后 base64 编码 UI 源，前端 pako 解压。"""
+    return base64.b64encode(gzip.compress(xml.encode("utf-8"))).decode("utf-8")
+
+
 class MjpegReader:
     """
     MJPEG 流读取器
@@ -65,10 +70,8 @@ class MjpegReader:
 class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
     """iOS 投屏 WebSocket - 使用 MJPEG 流式传输"""
 
-    # 设备管理器实例（由 IOSProxyServer 设置）
     device_manager = None
 
-    # 投屏参数
     TARGET_FPS = 25
     # MJPEG 重压缩质量：0 表示透传原始帧，1-95 才重编码
     JPEG_QUALITY = settings.get("ios", {}).get("proxy", {}).get("mjpeg_quality", 0)
@@ -199,7 +202,6 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                     continue
                 last_frame_time = now
 
-                # 透传原始 JPEG，配置了 JPEG_QUALITY 时才重编码
                 if self.JPEG_QUALITY:
                     try:
                         img = Image.open(io.BytesIO(jpeg_data))
@@ -224,7 +226,6 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
                 logger.info(f"iOS MJPEG 源已关闭，结束投屏（设备释放或断开）: {self.udid}")
                 disconnected = True
         except Exception as e:
-            # 其余为真正异常
             logger.error(f"iOS MJPEG 流异常: {e}")
             disconnected = True
         finally:
@@ -266,7 +267,6 @@ class IOSScreenStreamWebSocket(tornado.websocket.WebSocketHandler):
 class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
     """iOS 设备控制 WebSocket"""
 
-    # 设备管理器实例（由 IOSProxyServer 设置）
     device_manager = None
 
     def __init__(self, application: tornado.web.Application, request: httputil.HTTPServerRequest, **kwargs: Any):
@@ -283,7 +283,7 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
         """WebSocket 连接建立"""
         self.udid = udid
         try:
-            if not self.device_manager or  udid not in self.device_manager.devices:
+            if not self.device_manager or udid not in self.device_manager.devices:
                 await self.write_message(json.dumps({
                     "type": "error",
                     "message": f"Device not found: {udid}"
@@ -433,7 +433,7 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             }))
 
     async def _handle_long_click(self, data):
-        """处理长按请求 - iOS 通过 touchAndHold 实现"""
+        """处理长按请求"""
         try:
             if not self.wda_client:
                 raise Exception("设备未连接")
@@ -470,7 +470,7 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             }))
 
     async def _handle_swipe(self, data):
-        """处理滑动请求 - 带节流"""
+        """处理滑动请求"""
         try:
             if not self.wda_client:
                 raise Exception("设备未连接")
@@ -537,11 +537,11 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             }))
 
     async def _handle_wake_screen(self, data):
-        """处理点亮/唤醒屏幕：调用 WDA unlock（若支持）"""
+        """处理点亮/锁屏：切换屏幕状态"""
         try:
             if not self.wda_client:
                 raise Exception("设备未连接")
-            success = await self.wda_client.unlock()
+            success = await self.wda_client.toggle_screen()
             await self.write_message(json.dumps({
                 "type": "wake_screen_result",
                 "success": success,
@@ -563,8 +563,7 @@ class IOSDeviceControlWebSocket(tornado.websocket.WebSocketHandler):
 
             xml = await self.wda_client.get_source()
             if xml:
-                compressed = gzip.compress(xml.encode('utf-8'))
-                encoded = base64.b64encode(compressed).decode('utf-8')
+                encoded = _encode_source(xml)
 
                 await self.write_message(json.dumps({
                     "type": "dump_hierarchy_result",
@@ -669,8 +668,7 @@ class IOSElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
 
             xml = await self.wda_client.get_source()
             if xml:
-                compressed = gzip.compress(xml.encode('utf-8'))
-                encoded = base64.b64encode(compressed).decode('utf-8')
+                encoded = _encode_source(xml)
 
                 await self.write_message(json.dumps({
                     "type": "ui_hierarchy",
@@ -702,8 +700,7 @@ class IOSElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
 
             xml = await self.wda_client.get_source()
             if xml:
-                compressed = gzip.compress(xml.encode('utf-8'))
-                encoded = base64.b64encode(compressed).decode('utf-8')
+                encoded = _encode_source(xml)
 
                 await self.write_message(json.dumps({
                     "type": "xml_only",

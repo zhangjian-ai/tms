@@ -27,7 +27,7 @@
                 <el-tag v-else type="danger">未连接</el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="代理服务">
-                {{ connectionInfo.proxyHost + ":" + connectionInfo.proxyPort || '-' }}
+                {{ connectionInfo.proxyHost ? connectionInfo.proxyHost + ":" + connectionInfo.proxyPort : '-' }}
               </el-descriptions-item>
               <el-descriptions-item label="本地调试">
                 <el-tag type="success" @click="copyCommand" style="cursor: pointer;">
@@ -36,7 +36,7 @@
               </el-descriptions-item>
               <el-descriptions-item label="本地连接">
                 <el-tag type="success" @click="copyConnectionCommand" style="cursor: pointer;">
-                  {{ "adb connect " + connectionInfo.connection || '-' }}
+                  {{ connectionInfo.connection ? "adb connect " + connectionInfo.connection : '-' }}
                 </el-tag>
               </el-descriptions-item>
             </el-descriptions>
@@ -135,40 +135,43 @@
       <div class="screen-area">
         <div class="screen-header">
           <h3>设备投屏</h3>
-          <div class="header-controls" v-if="isConnected && videoResolution.width > 0">
-            <el-button 
-              type="warning" 
-              size="small" 
+        </div>
+
+        <div class="screen-main">
+          <div class="side-controls" v-if="isConnected && videoResolution.width > 0">
+            <el-button
+              type="warning"
+              size="small"
               @click="handleWakeScreen"
               class="control-btn"
               :title="'唤醒屏幕'"
             >
               <el-icon><Sunny /></el-icon>
             </el-button>
-            
-            <el-button 
-              type="primary" 
-              size="small" 
+
+            <el-button
+              type="primary"
+              size="small"
               @click="handleHomeKey"
               class="control-btn"
               :title="'HOME'"
             >
               <el-icon><HomeFilled /></el-icon>
             </el-button>
-            
-            <el-button 
-              type="success" 
-              size="small" 
+
+            <el-button
+              type="success"
+              size="small"
               @click="handleScreenshot"
               class="control-btn"
               :title="'截屏'"
             >
               <el-icon><Camera /></el-icon>
             </el-button>
-            
-            <el-button 
-              type="info" 
-              size="small" 
+
+            <el-button
+              type="info"
+              size="small"
               @click="handleDumpXml"
               class="control-btn"
               :title="'Dump XML'"
@@ -196,10 +199,7 @@
               <el-icon><Grid /></el-icon>
             </el-button>
           </div>
-        </div>
-        
-        <div class="screen-main">
-          
+
           <div class="screen-container">
             <div v-if="connecting || loading" class="screen-placeholder">
               <el-icon size="48" color="#409EFF">
@@ -216,7 +216,7 @@
                 重新连接
               </el-button>
             </div>
-            
+
             <div v-else class="screen-display">
               <!-- 投屏画面（WebCodecs 解码 → canvas） -->
               <canvas
@@ -232,7 +232,7 @@
                 @pointerleave="handleScreenPointerLeave"
                 @wheel.prevent="handleScreenWheel"
               ></canvas>
-              
+
             </div>
           </div>
         </div>
@@ -387,23 +387,21 @@ export default {
       height: 0
     })
 
-    // 连接信息
     const connectionInfo = reactive({
       id: route.params.id,
       deviceName: route.query.name,
       serial: route.query.serial || '',
 
-      // 连接配置
       adbHost: '',
       adbPort: '',
       proxyHost: '',
       proxyPort: '',
       connection: '',
     })
-    
-    let scrcpyWs = null  // 投屏WebSocket
-    let controlWs = null // 控制WebSocket
-    let inspectorWs = null // 元素检查器WebSocket
+
+    let scrcpyWs = null
+    let controlWs = null
+    let inspectorWs = null
     let player = null
     let streamFps = 25 // 由 agent 在 stream_started 上报，作为编码帧率的单一来源
 
@@ -411,13 +409,12 @@ export default {
 
     const elementInspectorEnabled = ref(false)
     const appManagerEnabled = ref(false)     // 应用管理面板开关（与检查器互斥）
-    const operationLogs = ref([])       // 操作日志记录
-    const selectedElement = ref(null)   // 点击选中的元素
-    const hoverElement = ref(null)      // hover的元素
-    const isHovering = ref(false)       // 是否正在hover状态
-    const uiHierarchy = ref(null)       // UI层次结构数据
-    const lastXmlHash = ref('')         // 上次XML内容哈希
-    let xmlChangeTimer = null           // XML变化检测定时器
+    const operationLogs = ref([])
+    const selectedElement = ref(null)
+    const hoverElement = ref(null)
+    const uiHierarchy = ref(null)
+    const lastXmlHash = ref('')
+    let xmlChangeTimer = null
 
     const getConnectionInfo = async () => {
       try {
@@ -578,9 +575,7 @@ export default {
         const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/control`
 
         controlWs = new WebSocket(wsUrl)
-        
-        controlWs.onopen = () => {}
-        
+
         controlWs.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data)
@@ -589,9 +584,7 @@ export default {
             console.error('控制消息解析失败', error)
           }
         }
-        
-        controlWs.onclose = () => {}
-        
+
         controlWs.onerror = (error) => {
           console.error('设备控制连接失败:', error)
         }
@@ -607,9 +600,6 @@ export default {
 
         inspectorWs = new WebSocket(wsUrl)
 
-        inspectorWs.onopen = () => {
-        }
-
         inspectorWs.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data)
@@ -619,9 +609,6 @@ export default {
           }
         }
 
-        inspectorWs.onclose = () => {
-        }
-        
         inspectorWs.onerror = (error) => {
           console.error('元素检查器连接失败:', error)
         }
@@ -707,9 +694,9 @@ export default {
         case 'stream_stopped':
           break
         case 'device_disconnected':
-          // 设备被拔出/释放：立即反映到页面
           ElMessage.warning('设备已断开连接')
           isConnected.value = false
+          stopHoldHeartbeat()
           break
         case 'error':
           ElMessage.error(`错误: ${message.message}`)
@@ -719,7 +706,6 @@ export default {
       }
     }
     
-    // 处理检查器WebSocket消息
     const handleInspectorMessage = (message) => {
       switch (message.type) {
         case 'connected':
@@ -928,7 +914,9 @@ export default {
 
         const screenArea = document.querySelector('.screen-area')
         if (screenArea) {
-          screenArea.style.maxWidth = `${targetWidth + 24}px`
+          const sideEl = document.querySelector('.side-controls')
+          const sideWidth = sideEl ? sideEl.offsetWidth : 0
+          screenArea.style.maxWidth = `${targetWidth + 24 + sideWidth}px`
           screenArea.style.width = 'auto'
           // 左侧栏高度对齐投屏区，使应用管理面板底边与投屏底边一致
           const connectionArea = document.querySelector('.connection-info-area')
@@ -1129,7 +1117,7 @@ export default {
               }
               findElementAtPosition(oc.x, oc.y)
             }
-          }, 150)
+          }, 250)
         }
       }
 
@@ -1207,7 +1195,6 @@ export default {
     const handleScreenPointerLeave = () => {
       // 仅清理检查器 hover 状态；拖拽期间由指针捕获维持，离开元素不影响
       if (!isMouseDown && elementInspectorEnabled.value) {
-        isHovering.value = false
         hoverElement.value = null
       }
     }
@@ -1294,7 +1281,7 @@ export default {
             adjustScreenContainer()
           })
         }
-      }, 100) // 100ms 防抖延迟
+      }, 100)
     }
     
     // ============= 元素检查器相关函数 =============
@@ -1381,7 +1368,6 @@ export default {
 
     const isPointInBounds = (x, y, bounds) => {
       if (!bounds) return false
-      // 严格边界检测
       return x > bounds.left && x < bounds.right && y > bounds.top && y < bounds.bottom
     }
 
@@ -1543,11 +1529,9 @@ export default {
 
       if (foundElement) {
         hoverElement.value = foundElement
-        isHovering.value = true
         return foundElement
       } else {
         hoverElement.value = null
-        isHovering.value = false
       }
 
       return null
@@ -1587,7 +1571,6 @@ export default {
 
       operationLogs.value.unshift(log)
 
-      // 限制日志数量，最多保留5条
       if (operationLogs.value.length > 5) {
         operationLogs.value = operationLogs.value.slice(0, 5)
       }
@@ -1690,11 +1673,11 @@ export default {
     let stabilityCheckTimer = null
     let stabilityCheckCount = 0
     let lastStabilityHash = null
-    let consecutiveStableCount = 0 // 连续稳定次数
-    let xmlRequestRetryCount = 0 // XML请求重试次数
-    const MAX_STABILITY_CHECKS = 12 // 最大检测次数
-    const MAX_XML_RETRY = 3 // 最大重试次数
-    const REQUIRED_STABLE_COUNT = 2 // 需要连续稳定的次数
+    let consecutiveStableCount = 0
+    let xmlRequestRetryCount = 0
+    const MAX_STABILITY_CHECKS = 12
+    const MAX_XML_RETRY = 3
+    const REQUIRED_STABLE_COUNT = 2
 
     // 等待页面稳定的XML检测（基准XML存储在web端）
     const waitForPageStability = (initialDelay = 1000) => {
@@ -1857,11 +1840,7 @@ export default {
     }
 
     const scheduleXmlCheck = (delay = 1000) => {
-      // 清除之前的定时器
-      if (xmlChangeTimer) {
-        clearTimeout(xmlChangeTimer)
-      }
-
+      // 稳定性检测自管理 stabilityCheckTimer；不要在此清除 xmlChangeTimer（那是兜底轮询的 interval）
       waitForPageStability(delay)
     }
 
@@ -1883,7 +1862,6 @@ export default {
       // 清理常规检测定时器
       if (xmlChangeTimer) {
         clearInterval(xmlChangeTimer)
-        clearTimeout(xmlChangeTimer)
         xmlChangeTimer = null
       }
       
@@ -2193,42 +2171,21 @@ export default {
   color: #303133;
 }
 
-.header-controls {
+.side-controls {
   display: flex;
+  flex-direction: column;
   gap: 8px;
+  padding: 10px 8px;
+  border-right: 1px solid #e6e6e6;
   align-items: center;
-}
-
-.header-controls .control-btn {
-  width: 32px !important;
-  /* height: 32px !important; */
-  /* min-width: 32px !important;
-  max-width: 32px !important; */
-  padding: 0 !important;
-  margin: 0 !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 6px !important;
+  flex-shrink: 0;
 }
 
 .screen-main {
   flex: 1;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
   padding: 0;
-}
-
-.screen-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 6px;
-  background-color: #f8f9fa;
-  border-left: 1px solid #e6e6e6;
-  min-width: 32px;
-  align-items: flex-start;
 }
 
 .control-btn {
@@ -2269,6 +2226,7 @@ export default {
 .screen-container {
   position: relative;
   display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
   background-color: #000;

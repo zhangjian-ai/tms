@@ -50,8 +50,8 @@ class IOSDeviceManager:
         self._locks: Dict[str, asyncio.Lock] = {}  # 每设备串行化 start/stop_proxy
         self._idb_lock = asyncio.Lock()  # 串行化所有阻塞 go-ios 调用（见 _idb_call）
 
-        # 清理上次 agent 遗留的 runwda/forward 孤儿进程（否则多份 forward 抢 8100/9100 致投屏 reset）
-        self.idb.reap_stale()
+        # 清理上次遗留的 go-ios 进程（tunnel/runwda/forward 可能异常残留）
+        self.idb.kill_all()
 
         # iOS 17+ 需要常驻 RSD 隧道（需 root）
         self.tunnel_process: Optional[subprocess.Popen] = None
@@ -66,8 +66,8 @@ class IOSDeviceManager:
         return lock
 
     async def _idb_call(self, fn, *args):
-        """串行化并移出事件循环执行 go-ios 阻塞调用。
-
+        """
+        串行化并移出事件循环执行 go-ios 阻塞调用。
         go-ios 命令共享 usbmuxd/RSD 隧道，并发调用会相互干扰，故用一把共享锁串行化。
         """
         async with self._idb_lock:
@@ -87,10 +87,6 @@ class IOSDeviceManager:
         self._terminate(device.wda_runner)
         self._terminate(device.wda_forward)
         self._terminate(device.mjpeg_forward)
-        # 清掉 _spawn 遗留的临时日志文件
-        self.idb.cleanup_spawn_log(device.wda_runner)
-        self.idb.cleanup_spawn_log(device.wda_forward)
-        self.idb.cleanup_spawn_log(device.mjpeg_forward)
         device.wda_runner = None
         device.wda_forward = None
         device.mjpeg_forward = None
@@ -172,7 +168,6 @@ class IOSDeviceManager:
                         device = IOSDeviceState(udid=udid, online=True, last_seen=current_time)
                         self.devices[udid] = device
                     else:
-                        # 本轮出现即重置缺失计数
                         device.miss_count = 0
                         device.last_seen = current_time
                         if not device.online:
@@ -214,7 +209,7 @@ class IOSDeviceManager:
                             continue
                         device.health_fail += 1
                         if device.health_fail < 3:
-                            continue  # 瞬时不健康，暂不处理
+                            continue
                         device.health_fail = 0
                         logger.warning(f"WDA 连续失联，后台恢复（保留投屏）: {udid}")
                         # 后台任务恢复：_wait_wda_ready 最长 30s，不能 await 在轮询里
@@ -293,7 +288,6 @@ class IOSDeviceManager:
                         device.mjpeg_port = 0
                     device.occupied = True
                     return
-                # 先置占用，init 失败再回退
                 device.occupied = True
                 if not await self._init_device(udid, device, cast=cast):
                     device.occupied = False
@@ -346,25 +340,13 @@ class IOSDeviceManager:
 
             runner = device.wda_runner
             if runner is not None and runner.poll() is not None:
-                log_tail = self.idb.read_spawn_log(runner)
-                logger.error(
-                    f"runwda 进程已退出(code={runner.returncode})，WDA 未在设备上运行: {udid}"
-                    + (f"\ngo-ios 输出: {log_tail}" if log_tail else "")
-                )
+                logger.error(f"runwda 进程已退出(code={runner.returncode})，WDA 未在设备上运行: {udid}")
                 return False
 
             if device.wda_client and await device.wda_client.health_check():
                 return True
-            logger.debug(f"等待 WDA 就绪... {waited}/{timeout}s ({udid})")
 
-        # 超时：把 forward / runwda 的真实输出打出来，便于定位隧道/转发失败
-        fwd_tail = self.idb.read_spawn_log(device.wda_forward)
-        runner_tail = self.idb.read_spawn_log(device.wda_runner)
-        logger.error(
-            f"WDA 就绪超时({timeout}s): {udid}"
-            + (f"\nforward 输出: {fwd_tail}" if fwd_tail else "")
-            + (f"\nrunwda 输出: {runner_tail}" if runner_tail else "")
-        )
+        logger.error(f"WDA 就绪超时({timeout}s): {udid}")
         return False
 
     async def _init_device(self, udid: str, device: IOSDeviceState, cast: bool = False) -> bool:
@@ -372,8 +354,7 @@ class IOSDeviceManager:
 
         WDA(8100)+会话总是启动；MJPEG(9100) 仅在 cast=True 时启动。
         """
-        # 起代理前先清掉本设备残留的 runwda/forward（按 udid 精确匹配，不影响其它在用设备），
-        # 避免旧转发抢 8100/9100 导致 Connection reset
+        # 起代理前清掉本设备残留的 runwda/forward（避免旧转发抢 8100/9100 致投屏 reset）
         await asyncio.to_thread(self.idb.reap_stale, udid)
 
         # 检查 WDA 是否已安装

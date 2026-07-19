@@ -37,13 +37,12 @@ class ScrcpyManager:
         try:
             scrcpy_device = await self.get_device_client(serial)
 
-            # 剔除已断开的客户端与自身，避免残留连接造成误判
+            # 剔除已断开的客户端与自身
             scrcpy_device.ws_client_list = [
                 c for c in scrcpy_device.ws_client_list
                 if getattr(c, "ws_connection", None) is not None and c is not ws_client
             ]
 
-            # 已有其他存活客户端在投屏 -> 拒绝
             if scrcpy_device.ws_client_list:
                 logger.warning(f"设备 {serial} 已在其他页面投屏，拒绝新的投屏请求")
                 return False

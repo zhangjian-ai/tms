@@ -47,8 +47,8 @@ class IOSAppUninstallHandler(_AppBaseHandler):
             return self.write_json(err[0], {"ok": False, "error": err[1]})
         try:
             body = json.loads(self.request.body or b"{}")
-        except Exception:
-            return self.write_json(400, {"ok": False, "error": "请求体非法"})
+        except Exception as e:
+            return self.write_json(400, {"ok": False, "error": str(e)})
         bundle_id = (body.get("id") or "").strip()
         if not bundle_id:
             return self.write_json(400, {"ok": False, "error": "缺少 id"})
@@ -113,3 +113,7 @@ class IOSAppInstallHandler(_AppBaseHandler):
                 pass
         self._tmp = None
         self._tmp_path = None
+
+    def on_connection_close(self):
+        # 客户端上传中途断开时 post 不会执行，在此清理临时文件
+        self._cleanup()

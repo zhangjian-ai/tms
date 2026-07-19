@@ -17,11 +17,8 @@ class WSClient:
     async def connect(self):
         """连接到WebSocket服务器"""
         try:
-            full_url = self.url + self.config.get("uri", "/ws/device")
-            logger.info(f"正在连接WebSocket服务器: {full_url}")
-
             request = httpclient.HTTPRequest(
-                full_url,
+                self.url + self.config.get("uri", "/ws/device"),
                 validate_cert=False,
                 connect_timeout=10.0,
                 request_timeout=30.0

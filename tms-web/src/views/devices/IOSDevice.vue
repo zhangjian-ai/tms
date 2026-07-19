@@ -94,7 +94,10 @@
       <div class="screen-area">
         <div class="screen-header">
           <h3>设备投屏</h3>
-          <div class="header-controls" v-if="isConnected && videoResolution.width > 0">
+        </div>
+
+        <div class="screen-main">
+          <div class="side-controls" v-if="isConnected && videoResolution.width > 0">
             <el-button
               type="warning"
               size="small"
@@ -150,9 +153,7 @@
               <el-icon><Grid /></el-icon>
             </el-button>
           </div>
-        </div>
 
-        <div class="screen-main">
           <div v-if="loading" class="screen-placeholder">
             <el-icon class="is-loading" size="48"><Loading /></el-icon>
             <p>正在获取连接信息...</p>
@@ -303,7 +304,6 @@ let controlWs = null
 let screenWs = null
 let inspectorWs = null
 
-// 视频分辨率
 const videoResolution = reactive({
   width: 0,
   height: 0
@@ -313,7 +313,7 @@ const screenCanvas = ref(null)
 const videoWrapperRef = ref(null)
 let canvasContext = null
 
-// 投屏帧解码：始终渲染最新帧、丢弃积压帧（与 Android WebCodecs 一致的「画最新」策略）
+// 只渲染最新帧、丢弃积压帧，避免解码慢于到帧时延迟累积
 let latestFrameBuffer = null
 let frameDecoding = false
 
@@ -323,7 +323,7 @@ const mouseState = reactive({
   startY: 0,
   beganAt: null  // 按下时间，用于区分点击/长按
 })
-let activePointerId = null  // 指针捕获的活动 pointerId
+let activePointerId = null
 
 let wheelDebounceTimer = null
 let wheelAccumulatedY = 0
@@ -340,8 +340,10 @@ const operationLogs = ref([])
 const hoverElement = ref(null)
 const uiHierarchy = ref(null)
 let xmlCheckTimer = null
-let lastXmlHash = ref('')
-let elementHoverTimer = null
+const lastXmlHash = ref('')
+let xmlPending = false   // 已发出 get_xml_only、尚未收到响应，避免请求堆积
+let lastXmlRefresh = 0   // 上次刷新 UI 树的时间戳
+let lastHoverMatch = 0   // 上次 hover 元素匹配的时间戳
 
 const getWDAUrl = () => {
   if (!connectionInfo.adbHost || !connectionInfo.adbPort) {
@@ -406,7 +408,6 @@ const adjustScreenContainer = () => {
     const headerHeight = headerEl ? headerEl.offsetHeight : 40
     const maxVideoHeight = availableHeight - headerHeight - 20
 
-    // 计算可用宽度：总宽度减去连接信息区域和间距
     const connectionArea = document.querySelector('.connection-info-area')
     const connectionWidth = connectionArea ? connectionArea.offsetWidth : 350
     const maxVideoWidth = mainContent.clientWidth - connectionWidth - 36
@@ -416,12 +417,10 @@ const adjustScreenContainer = () => {
     let targetWidth = vw * scaleFactor
     let targetHeight = vh * scaleFactor
 
-    // 先按可用高度约束
     if (targetHeight > maxVideoHeight) {
       targetHeight = maxVideoHeight
       targetWidth = targetHeight * ratio
     }
-    // 再按宽度约束
     if (targetWidth > maxVideoWidth) {
       targetWidth = maxVideoWidth
       targetHeight = targetWidth / ratio
@@ -431,7 +430,9 @@ const adjustScreenContainer = () => {
     wrapper.style.height = `${targetHeight}px`
     const screenArea = document.querySelector('.screen-area')
     if (screenArea) {
-      screenArea.style.maxWidth = `${targetWidth + 24}px`
+      const sideEl = document.querySelector('.side-controls')
+      const sideWidth = sideEl ? sideEl.offsetWidth : 0
+      screenArea.style.maxWidth = `${targetWidth + 24 + sideWidth}px`
       screenArea.style.width = 'auto'
       // 左侧栏高度对齐投屏区，使应用管理面板底边与投屏底边一致
       if (connectionArea) {
@@ -605,9 +606,9 @@ const handleScreenMessage = (data) => {
       console.log('投屏已停止')
       break
     case 'device_disconnected':
-      // 设备被拔出/断开：清理连接
       ElMessage.warning('设备已断开连接')
       isConnected.value = false
+      stopHoldHeartbeat()
       if (controlWs) controlWs.close()
       if (screenWs) screenWs.close()
       if (inspectorWs) inspectorWs.close()
@@ -685,17 +686,12 @@ const handlePointerMove = (event) => {
   if (!mouseState.isDown && elementInspectorEnabled.value) {
     const coords = getEventDeviceCoords(event.clientX, event.clientY)
     if (coords && videoResolution.width && videoResolution.height) {
-      if (elementHoverTimer) {
-        clearTimeout(elementHoverTimer)
+      maybeRefreshHierarchy()
+      const now = Date.now()
+      if (now - lastHoverMatch >= 250) {
+        lastHoverMatch = now
+        findElementAtPosition(coords.x, coords.y)
       }
-      elementHoverTimer = setTimeout(() => {
-        if (coords.x >= 0 && coords.y >= 0 && coords.x <= videoResolution.width && coords.y <= videoResolution.height) {
-          if (!uiHierarchy.value) {
-            scheduleXmlCheck(100)
-          }
-          findElementAtPosition(coords.x, coords.y)
-        }
-      }, 150)
     }
   }
   // 按下拖拽过程：WDA 仅支持 tap/swipe，不发送中间点
@@ -818,7 +814,6 @@ const sendLongClick = (x, y, duration) => {
   sendControlMessage({ type: 'long_click', x, y, duration: duration / 1000 })
 }
 
-// 发送滑动 - duration 100ms
 const sendSwipe = (startX, startY, endX, endY) => {
   if (elementInspectorEnabled.value) {
     const logData = {
@@ -1000,6 +995,7 @@ const handleInspectorMessage = (data) => {
       break
     case 'ui_hierarchy':
     case 'xml_only':
+      xmlPending = false
       if (data.success && data.data && data.data.xml) {
         decompressXml(data.data).then(xmlContent => {
           const currentXmlHash = generateXmlHash(xmlContent)
@@ -1049,7 +1045,6 @@ const toggleElementInspector = async () => {
   if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) {
     try {
       await connectInspectorWebSocket()
-      // 连接成功后立即获取一次 UI 层次
       refreshUIHierarchy()
     } catch (error) {
       console.error('连接元素检查器失败:', error)
@@ -1079,7 +1074,18 @@ const toggleAppManager = async () => {
 
 const refreshUIHierarchy = () => {
   if (!inspectorWs || inspectorWs.readyState !== WebSocket.OPEN) return
+  xmlPending = true
+  lastXmlRefresh = Date.now()
   inspectorWs.send(JSON.stringify({ type: 'get_xml_only' }))
+}
+
+// 节流刷新 UI 树：距上次刷新超过 800ms 且无进行中的请求时才重新拉取，避免慢速 get_source 堆积
+const maybeRefreshHierarchy = () => {
+  const now = Date.now()
+  // 兜底：pending 超过 3s 视为响应丢失，允许重发
+  if (xmlPending && now - lastXmlRefresh < 3000) return
+  if (now - lastXmlRefresh < 800) return
+  refreshUIHierarchy()
 }
 
 const decompressXml = async (data) => {
@@ -1341,7 +1347,6 @@ const handlePageHide = () => {
 }
 
 onMounted(async () => {
-  // 先确认占用再投屏
   const ok = await ensureHold()
   if (!ok) {
     try {
@@ -1382,7 +1387,6 @@ onBeforeUnmount(() => {
   if (resizeTimer) clearTimeout(resizeTimer)
   if (wheelDebounceTimer) clearTimeout(wheelDebounceTimer)
   if (xmlCheckTimer) clearTimeout(xmlCheckTimer)
-  if (elementHoverTimer) clearTimeout(elementHoverTimer)
   stopHoldHeartbeat()
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('pagehide', handlePageHide)
@@ -1491,26 +1495,39 @@ onBeforeUnmount(() => {
   color: #303133;
 }
 
-.header-controls {
+.side-controls {
   display: flex;
+  flex-direction: column;
   gap: 8px;
+  padding: 10px 8px;
+  border-right: 1px solid #e6e6e6;
   align-items: center;
+  flex-shrink: 0;
 }
 
-.header-controls .control-btn {
-  width: 32px !important;
+.side-controls .control-btn {
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  max-width: 24px !important;
   padding: 0 !important;
   margin: 0 !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  border-radius: 6px !important;
+  border-radius: 3px !important;
+  border-width: 1px !important;
+}
+
+.side-controls .control-btn .el-icon {
+  font-size: 12px;
+  margin: 0 !important;
 }
 
 .screen-main {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   padding: 0;
 }
 
@@ -1535,6 +1552,7 @@ onBeforeUnmount(() => {
 .screen-display {
   position: relative;
   display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
   min-height: fit-content;

@@ -93,7 +93,6 @@ class ScrcpyDevice:
             await self.cleanup_existing_scrcpy_processes()
 
             cfg = get_adb_config()
-            # adbutils 客户端连接用本机地址
             adb_host = cfg["host"] if cfg["host"] != "0.0.0.0" else "127.0.0.1"
             adb_port = cfg["port"]
 
@@ -206,7 +205,7 @@ class ScrcpyDevice:
             if self.shell_socket:
                 try:
                     self.shell_socket.terminate()
-                except:
+                except Exception:
                     pass
                 self.shell_socket = None
             raise ConnectionError(f"启动scrcpy-server失败: {e}")
@@ -337,7 +336,7 @@ class ScrcpyDevice:
         if self.shell_socket:
             try:
                 self.shell_socket.terminate()
-            except:
+            except Exception:
                 pass
             self.shell_socket = None
 

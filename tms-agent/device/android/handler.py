@@ -88,7 +88,6 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
         self.serial = serial
         self.streaming = False
 
-        # 设备在线校验
         if not _device_online(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -98,7 +97,6 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
             self.close()
             return
 
-        # 投屏校验
         if not _device_cast_allowed(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -194,7 +192,7 @@ class ScrcpyWebSocket(tornado.websocket.WebSocketHandler):
                         "height": scrcpy_device.resolution[1]
                     }
 
-                # 发送流开始通知，先告知分辨率与帧率（作为编码参数的单一来源）
+                # 分辨率与帧率作为前端解码参数的单一来源
                 message_data = {
                     "type": "stream_started",
                     "fps": scrcpy_device.max_fps
@@ -265,7 +263,6 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
         """WebSocket连接建立"""
         self.serial = serial
 
-        # 设备在线校验
         if not _device_online(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -275,7 +272,6 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             self.close()
             return
 
-        # 占用校验
         if not _device_occupied(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -352,7 +348,6 @@ class DeviceControlWebSocket(tornado.websocket.WebSocketHandler):
             if not self.device:
                 raise Exception("设备未连接")
 
-            # PIL Image对象
             screenshot_image = await asyncio.to_thread(self.device.screenshot)
 
             buffer = io.BytesIO()
@@ -451,7 +446,6 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
         """WebSocket连接建立"""
         self.serial = serial
 
-        # 设备在线校验
         if not _device_online(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -461,7 +455,6 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             self.close()
             return
 
-        # 占用校验
         if not _device_occupied(self.device_manager, serial):
             if self.ws_connection and not self.ws_connection.is_closing():
                 self.write_message(json.dumps({
@@ -541,7 +534,7 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             if not self.device:
                 raise Exception("设备未连接")
 
-            # 使用通用函数获取UI层次结构XML（不压缩，因为需要解析）
+            # 不压缩：需解析 XML
             xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=False)
             hierarchy_xml = xml_data["xml"]
 
@@ -567,19 +560,23 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
                 "error": str(e)
             }))
 
+    @staticmethod
+    def _parse_bounds(bounds: str) -> dict:
+        """解析 "[x1,y1][x2,y2]" 为坐标与中心/宽高字典。"""
+        m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
+        if m:
+            x1, y1, x2, y2 = map(int, m.groups())
+        else:
+            x1 = y1 = x2 = y2 = 0
+        return {
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "center_x": (x1 + x2) // 2, "center_y": (y1 + y2) // 2,
+            "width": x2 - x1, "height": y2 - y1,
+        }
+
     def _parse_ui_tree(self, element, index=0):
         """递归解析XML元素为树结构"""
         bounds = element.get("bounds", "")
-        bounds_match = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
-
-        if bounds_match:
-            x1, y1, x2, y2 = map(int, bounds_match.groups())
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            width = x2 - x1
-            height = y2 - y1
-        else:
-            x1 = y1 = x2 = y2 = center_x = center_y = width = height = 0
 
         node = {
             "index": index,
@@ -588,11 +585,7 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             "resource_id": element.get("resource-id", ""),
             "content_desc": element.get("content-desc", ""),
             "bounds": bounds,
-            "coordinates": {
-                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                "center_x": center_x, "center_y": center_y,
-                "width": width, "height": height
-            },
+            "coordinates": self._parse_bounds(bounds),
             "clickable": element.get("clickable", "false") == "true",
             "enabled": element.get("enabled", "false") == "true",
             "focused": element.get("focused", "false") == "true",
@@ -601,24 +594,13 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
         }
 
         for i, child in enumerate(element):
-            child_node = self._parse_ui_tree(child, len(node["children"]))
-            node["children"].append(child_node)
+            node["children"].append(self._parse_ui_tree(child, i))
 
         return node
 
     def _extract_element_info(self, element):
         """提取元素信息"""
         bounds = element.get("bounds", "")
-        bounds_match = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
-
-        if bounds_match:
-            x1, y1, x2, y2 = map(int, bounds_match.groups())
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            width = x2 - x1
-            height = y2 - y1
-        else:
-            x1 = y1 = x2 = y2 = center_x = center_y = width = height = 0
 
         return {
             "class": element.get("class", ""),
@@ -627,11 +609,7 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             "content_desc": element.get("content-desc", ""),
             "package": element.get("package", ""),
             "bounds": bounds,
-            "coordinates": {
-                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                "center_x": center_x, "center_y": center_y,
-                "width": width, "height": height
-            },
+            "coordinates": self._parse_bounds(bounds),
             "clickable": element.get("clickable", "false") == "true",
             "enabled": element.get("enabled", "false") == "true",
             "focused": element.get("focused", "false") == "true",
@@ -744,7 +722,6 @@ class ElementInspectorWebSocket(tornado.websocket.WebSocketHandler):
             if not selector:
                 raise Exception("缺少元素选择器")
 
-            # 实时获取UI层次结构（确保数据最新）
             xml_data = await asyncio.to_thread(get_device_hierarchy_xml, self.device, compress=False)
             hierarchy_xml = xml_data["xml"]
 
@@ -808,21 +785,17 @@ class AndroidProxyServer:
     def __init__(self, device_manager=None):
         self.config = settings["android"]
         self.device_manager = device_manager
-        # 初始化本地环境
         self.init_env()
-        # 启动代理服务
         self.app = self.make_app()
 
     @staticmethod
     def _exec(args: list):
         """执行一条 adb 命令（统一二进制，不用 shell）"""
         cmd = [get_adb_bin()] + args
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return proc.stdout.read().decode()
+        return subprocess.run(cmd, capture_output=True).stdout.decode()
 
     def init_env(self):
         port = str(self.config["adb"]["port"])
-        # 停止残留 server
         self._exec(["kill-server"])
         self._exec(["-P", port, "kill-server"])
         # -a 让 server 监听所有网卡

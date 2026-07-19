@@ -1,3 +1,5 @@
+import zipfile
+
 import requests
 import uiautomator2 as u2
 
@@ -6,7 +8,6 @@ from pathlib import Path
 
 from logzero import logger
 
-# 配置下载目录
 DOWNLOAD_DIR = Path(__file__).parent / "static"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -15,11 +16,9 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 SCRCPY_VERSION = "2.7"
 SCRCPY_SERVER_REMOTE = f"/data/local/tmp/scrcpy-server-{SCRCPY_VERSION}.jar"
 
-# 镜像源配置
 MIRROR_SOURCES = {
-    # scrcpy-server镜像源（设备端服务器）
     "scrcpy_server": [
-        "https://github.com/Genymobile/scrcpy/releases/download"  # GitHub官方
+        "https://github.com/Genymobile/scrcpy/releases/download"
     ]
 }
 
@@ -67,7 +66,7 @@ class AndroidToolDownloader:
             return True
 
         try:
-            response = requests.get(url, stream=True)
+            response = requests.get(url, stream=True, timeout=(10, 30))
             response.raise_for_status()
 
             with open(file_path, 'wb') as f:
@@ -87,30 +86,23 @@ class AndroidToolDownloader:
         """下载scrcpy-server"""
         logger.info("下载scrcpy-server...")
 
-        # scrcpy-server版本（模块级单一来源，device.py 复用同一常量）
-        version = SCRCPY_VERSION
-        server_file = f"scrcpy-server-v{version}"
-        zip_file = f"scrcpy-server-{version}.zip"
+        server_file = f"scrcpy-server-v{SCRCPY_VERSION}"
+        zip_file = f"scrcpy-server-{SCRCPY_VERSION}.zip"
 
-        # 检查zip文件是否已存在
         zip_path = self.download_dir / zip_file
         if zip_path.exists():
             logger.info(f"scrcpy-server zip已存在: {zip_file}")
             return True
 
-        # 下载scrcpy-server原始文件
         for mirror in self.mirror_sources.get("scrcpy_server", []):
-            url = f"{mirror}/v{version}/{server_file}"
+            url = f"{mirror}/v{SCRCPY_VERSION}/{server_file}"
             server_path = self.download_dir / server_file
 
             try:
                 if self.download_file(url, server_path):
-                    # 创建zip文件
-                    import zipfile
                     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
                         zf.write(server_path, arcname="scrcpy-server")
 
-                    # 删除原始文件
                     server_path.unlink()
                     logger.info(f"scrcpy-server下载成功: {zip_file}")
                     return True
@@ -147,25 +139,20 @@ class AndroidDeviceInstaller:
 
         device_path = SCRCPY_SERVER_REMOTE
 
-        # 检查设备上是否已存在
         try:
             result = device.shell(f"ls -l {device_path}")
             if "No such file" not in result.output:
                 return True
-        except:
-            pass  # 文件不存在，继续安装
+        except Exception:
+            pass
 
         try:
-            # 解压并推送到设备
-            import zipfile
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 with zf.open('scrcpy-server') as server_file:
-                    # 推送到设备
                     device.push(server_file, device_path, mode=0o755)
 
-            # 验证安装
             result = device.shell(f"ls -l {device_path}")
-            if "No such file" not in result:
+            if "No such file" not in result.output:
                 logger.info("scrcpy-server安装成功")
                 return True
             else:
@@ -181,18 +168,16 @@ class AndroidDeviceInstaller:
         """验证设备安装状态"""
         status = {}
 
-        # 检查scrcpy-server是否已安装
         try:
             result = device.shell(f"ls -l {SCRCPY_SERVER_REMOTE}").output
             status["scrcpy_server"] = SCRCPY_VERSION in result or "scrcpy-server" in result
-        except:
+        except Exception:
             status["scrcpy_server"] = False
 
-        # 检查设备基本信息
         try:
             info = device.device_info
-            status["device_info"] = True
-        except:
+            status["device_info"] = len(info.get("serial", "")) > 0
+        except Exception:
             status["device_info"] = False
 
         return status
@@ -203,10 +188,8 @@ class AndroidDeviceInstaller:
             device = u2.connect(device_serial)
             device.window_size()  # 触发atx-agent检查安装
 
-            # 安装scrcpy-server
             self.install_scrcpy_server(device)
 
-            # 验证安装
             status = self.verify_installation(device)
             success = all(status.values())
 

@@ -51,6 +51,7 @@ class WDAClient:
             )
             if response.code == 200:
                 return response
+
             logger.warning(f"WDA {path} 返回 {response.code}: {response.body}")
             return response
         except Exception as e:
@@ -63,15 +64,16 @@ class WDAClient:
             return {}
         return json.loads(response.body.decode("utf-8"))
 
+    @staticmethod
+    def _ok(resp) -> bool:
+        return resp is not None and resp.code == 200
+
     async def health_check(self) -> bool:
         """健康检查：GET /status"""
         try:
-            response = await self._request("GET", "/status", timeout=10.0)
-            if response.code != 200:
-                logger.debug(f"WDA /status 非 200: code={response.code} body={response.body!r}")
+            response = await self._request("GET", "/status", timeout=3.0)
             return response.code == 200
-        except Exception as e:
-            logger.debug(f"WDA /status 请求异常: {e}")
+        except Exception:
             return False
 
     async def create_session(self) -> bool:
@@ -148,7 +150,7 @@ class WDAClient:
             "POST", f"/session/{self.session_id}/wda/tap",
             body=json.dumps({"x": x, "y": y})
         )
-        return resp is not None and resp.code == 200
+        return self._ok(resp)
 
     async def swipe(self, from_x: int, from_y: int, to_x: int, to_y: int, duration: float = 0.1) -> bool:
         """滑动"""
@@ -160,7 +162,7 @@ class WDAClient:
                 "duration": duration
             })
         )
-        return resp is not None and resp.code == 200
+        return self._ok(resp)
 
     async def touch_and_hold(self, x: int, y: int, duration: float = 1.0) -> bool:
         """长按"""
@@ -169,7 +171,7 @@ class WDAClient:
             body=json.dumps({"x": x, "y": y, "duration": duration}),
             timeout=max(10.0, duration + 5.0)
         )
-        return resp is not None and resp.code == 200
+        return self._ok(resp)
 
     async def home(self) -> bool:
         """HOME 键"""
@@ -177,14 +179,44 @@ class WDAClient:
             "POST", f"/session/{self.session_id}/wda/pressButton",
             body=json.dumps({"name": "home"})
         )
-        return resp is not None and resp.code == 200
+        return self._ok(resp)
+
+    async def is_locked(self) -> bool:
+        """查询是否锁屏：GET /wda/locked。"""
+        if not self.session_id:
+            return False
+        resp = await self._control_request("GET", f"/session/{self.session_id}/wda/locked")
+        if not self._ok(resp):
+            return False
+        try:
+            return bool(self._json(resp).get("value"))
+        except Exception:
+            return False
+
+    async def lock(self) -> bool:
+        """锁屏（熄屏）：POST /wda/lock。"""
+        if not self.session_id:
+            return False
+        resp = await self._control_request("POST", f"/session/{self.session_id}/wda/lock")
+        return self._ok(resp)
 
     async def unlock(self) -> bool:
-        """点亮并解锁屏幕"""
+        """点亮屏幕：POST /wda/unlock。
+
+        点亮与解锁是两件事，此处只负责点亮唤醒，不按 HOME（HOME 会退出当前应用）。
+        """
         if not self.session_id:
             return False
         resp = await self._control_request("POST", f"/session/{self.session_id}/wda/unlock")
-        return resp is not None and resp.code == 200
+        return self._ok(resp)
+
+    async def toggle_screen(self) -> bool:
+        """切换点亮/熄屏：已熄屏则点亮，否则熄屏。"""
+        if not self.session_id:
+            return False
+        if await self.is_locked():
+            return await self.unlock()
+        return await self.lock()
 
     async def screenshot(self) -> Optional[str]:
         try:
