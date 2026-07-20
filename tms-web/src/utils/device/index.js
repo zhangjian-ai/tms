@@ -21,3 +21,5 @@ export {
 } from './scrcpy.js'
 
 export { WebCodecsPlayer } from './h264-player.js'
+
+export { agentWsBase, agentHttpBase } from './agent-endpoint.js'

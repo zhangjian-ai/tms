@@ -297,7 +297,7 @@ import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import { useIdleRelease } from '@/composables/useIdleRelease'
 import pako from 'pako'
-import { ScrcpyController, Action, WebCodecsPlayer } from '@/utils/device'
+import { ScrcpyController, Action, WebCodecsPlayer, agentWsBase } from '@/utils/device'
 import config from '@/config/index.js'
 
 const genSessionId = () => {
@@ -507,7 +507,7 @@ export default {
 
     const connectScrcpyWebSocket = () => {
       try {
-        const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/scrcpy`
+        const wsUrl = `${agentWsBase(connectionInfo.proxyHost, connectionInfo.proxyPort, 'android')}/devices/${connectionInfo.serial}/scrcpy`
         scrcpyWs = new WebSocket(wsUrl)
         scrcpyWs.binaryType = 'arraybuffer'
         scrcpy.bind(scrcpyWs)
@@ -542,7 +542,7 @@ export default {
     
     const connectControlWebSocket = () => {
       try {
-        const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/control`
+        const wsUrl = `${agentWsBase(connectionInfo.proxyHost, connectionInfo.proxyPort, 'android')}/devices/${connectionInfo.serial}/control`
 
         controlWs = new WebSocket(wsUrl)
 
@@ -566,7 +566,7 @@ export default {
     
     const connectInspectorWebSocket = () => {
       try {
-        const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${connectionInfo.serial}/inspector`
+        const wsUrl = `${agentWsBase(connectionInfo.proxyHost, connectionInfo.proxyPort, 'android')}/devices/${connectionInfo.serial}/inspector`
 
         inspectorWs = new WebSocket(wsUrl)
 

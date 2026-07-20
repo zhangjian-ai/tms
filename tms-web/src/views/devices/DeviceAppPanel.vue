@@ -86,7 +86,7 @@ const loadApps = async () => {
   if (!ready()) return
   loading.value = true
   try {
-    apps.value = await listApps(props.proxyHost, props.proxyPort, props.serial)
+    apps.value = await listApps(props.proxyHost, props.proxyPort, props.serial, props.platform)
   } catch (e) {
     ElMessage.error(e.message || '获取应用列表失败')
   } finally {
@@ -101,7 +101,7 @@ const confirmUninstall = async (app) => {
     return
   }
   try {
-    await uninstallApp(props.proxyHost, props.proxyPort, props.serial, app.id)
+    await uninstallApp(props.proxyHost, props.proxyPort, props.serial, app.id, props.platform)
     ElMessage.success('卸载成功')
     loadApps()
   } catch (e) {
@@ -125,7 +125,7 @@ const onFileChosen = async (event) => {
   installing.value = true
   installProgress.value = 0
   try {
-    await installApp(props.proxyHost, props.proxyPort, props.serial, file, (p) => { installProgress.value = p })
+    await installApp(props.proxyHost, props.proxyPort, props.serial, file, (p) => { installProgress.value = p }, props.platform)
     ElMessage.success('安装成功')
     loadApps()
   } catch (e) {

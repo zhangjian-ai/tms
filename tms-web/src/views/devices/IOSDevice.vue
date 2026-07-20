@@ -267,6 +267,7 @@ import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession.js'
 import { useIdleRelease } from '@/composables/useIdleRelease'
 import config from '@/config/index.js'
+import { agentWsBase } from '@/utils/device'
 import pako from 'pako'
 
 const genSessionId = () => {
@@ -474,7 +475,7 @@ const connectDevice = async () => {
 
 const connectControlWebSocket = () => {
   return new Promise((resolve, reject) => {
-    const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/control`
+    const wsUrl = `${agentWsBase(connectionInfo.proxyHost, connectionInfo.proxyPort, 'ios')}/devices/${deviceSerial.value}/control`
     controlWs = new WebSocket(wsUrl)
 
     controlWs.onopen = () => {
@@ -505,7 +506,7 @@ const connectControlWebSocket = () => {
 
 const connectScreenWebSocket = () => {
   return new Promise((resolve, reject) => {
-    const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/screen`
+    const wsUrl = `${agentWsBase(connectionInfo.proxyHost, connectionInfo.proxyPort, 'ios')}/devices/${deviceSerial.value}/screen`
     screenWs = new WebSocket(wsUrl)
     screenWs.binaryType = 'arraybuffer'  // 接收二进制数据
 
@@ -963,7 +964,7 @@ const handleWindowResize = () => {
 
 const connectInspectorWebSocket = () => {
   return new Promise((resolve, reject) => {
-    const wsUrl = `ws://${connectionInfo.proxyHost}:${connectionInfo.proxyPort}/devices/${deviceSerial.value}/inspector`
+    const wsUrl = `${agentWsBase(connectionInfo.proxyHost, connectionInfo.proxyPort, 'ios')}/devices/${deviceSerial.value}/inspector`
     inspectorWs = new WebSocket(wsUrl)
 
     inspectorWs.onopen = () => {
