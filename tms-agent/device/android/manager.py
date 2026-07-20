@@ -174,7 +174,13 @@ class AndroidDeviceManager:
                     else:
                         logger.error(f"接入工具安装失败（adb 仍可用）: {serial}")
 
+                # 僵尸引用（线程已退出）先丢弃，避免复用死代理
+                if device.t2u is not None and not device.t2u.is_alive():
+                    device.t2u = None
+
                 if not device.t2u:
+                    # 建链前清理该序列号残留/孤儿代理，从根源杜绝端口泄漏
+                    Tcp2Usb.stop_existing(serial)
                     t2u = Tcp2Usb(serial, self.host, self.port)
                     t2u.start()
                     device.t2u = t2u
