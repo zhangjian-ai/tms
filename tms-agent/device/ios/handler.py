@@ -18,6 +18,7 @@ from PIL import Image
 
 from device.ios.tools.client import WDAClient
 from device.ios.apps import IOSAppsHandler, IOSAppUninstallHandler, IOSAppInstallHandler
+from device.forward import ForwardHandler
 from utils.variables import settings
 
 
@@ -753,6 +754,8 @@ class IOSProxyServer:
             (r"/devices/([^/]+)/apps", IOSAppsHandler),                  # 应用列表
             (r"/devices/([^/]+)/apps/uninstall", IOSAppUninstallHandler),  # 卸载应用
             (r"/devices/([^/]+)/apps/install", IOSAppInstallHandler),    # 安装应用
+            (r"/api/forward", ForwardHandler,
+             dict(forward_manager=self.device_manager.forward_manager if self.device_manager else None)),  # 额外端口转发
         ], debug=self.config['proxy']['debug'])
 
     def run(self):

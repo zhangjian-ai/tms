@@ -12,6 +12,7 @@ from utils.server import ws_client
 from utils.variables import settings
 from device.ios.tools.idb import Idb
 from device.ios.tools.client import WDAClient
+from device.forward import PortForwardManager
 
 
 @dataclass
@@ -49,6 +50,7 @@ class IOSDeviceManager:
         self.ws: Optional[websocket.WebSocketClientConnection] = None
         self._locks: Dict[str, asyncio.Lock] = {}  # 每设备串行化 start/stop_proxy
         self._idb_lock = asyncio.Lock()  # 串行化所有阻塞 go-ios 调用（见 _idb_call）
+        self.forward_manager = PortForwardManager("ios", self)  # 额外端口转发（内聚到本模块）
 
         # 清理上次遗留的 go-ios 进程（tunnel/runwda/forward 可能异常残留）
         self.idb.kill_all()
@@ -203,6 +205,8 @@ class IOSDeviceManager:
                         offline_udids.append(udid)
                         async with lock:
                             await self._cleanup_device(device)
+                        if self.forward_manager:
+                            await self.forward_manager.remove_forwards(udid)
                         continue
 
                     # WDA 会话保活：仅对已占用设备执行，连续多次失败才恢复（不动 MJPEG 投屏）

@@ -15,6 +15,7 @@ from utils.variables import settings
 from device.android.tcp2usb import Tcp2Usb
 from device.android.scrcpy import scrcpy_manager
 from device.android.tools.install import AndroidDeviceInstaller
+from device.forward import PortForwardManager
 
 
 @dataclass
@@ -54,6 +55,7 @@ class AndroidDeviceManager:
         self.installer = AndroidDeviceInstaller()
         self.ws: websocket.WebSocketClientConnection = None
         self._locks: Dict[str, asyncio.Lock] = {}  # 每设备串行化 start/stop_proxy
+        self.forward_manager = PortForwardManager("android", self)  # 额外端口转发（内聚到本模块）
 
     def _lock_for(self, serial: str) -> asyncio.Lock:
         lock = self._locks.get(serial)
@@ -214,8 +216,8 @@ class AndroidDeviceManager:
             logger.info(f"设备 {serial} 代理已停止")
 
     async def _on_offline(self, serial: str):
-        """设备下线：标记离线并清理 scrcpy / Tcp2Usb 资源。
-
+        """
+        设备下线：标记离线并清理 scrcpy / Tcp2Usb 资源。
         offline 上报与移除交由心跳循环完成。
         """
         device = self.devices.get(serial)
@@ -230,6 +232,8 @@ class AndroidDeviceManager:
             if device.t2u:
                 device.t2u.stop()
                 device.t2u = None
+            if self.forward_manager:
+                await self.forward_manager.remove_forwards(serial)
         except Exception as e:
             logger.error(f"设备下线清理失败 {serial}: {e}")
 

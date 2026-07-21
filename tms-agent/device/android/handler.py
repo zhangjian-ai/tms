@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 from device.android.scrcpy import scrcpy_manager
 from device.android.tools.adb import get_adb_bin
 from device.android.apps import AndroidAppsHandler, AndroidAppUninstallHandler, AndroidAppInstallHandler
+from device.forward import ForwardHandler
 from utils.variables import settings
 
 
@@ -818,6 +819,8 @@ class AndroidProxyServer:
             (r"/devices/([^/]+)/apps", AndroidAppsHandler),  # 应用列表
             (r"/devices/([^/]+)/apps/uninstall", AndroidAppUninstallHandler),  # 卸载应用
             (r"/devices/([^/]+)/apps/install", AndroidAppInstallHandler),  # 安装应用
+            (r"/api/forward", ForwardHandler,
+             dict(forward_manager=self.device_manager.forward_manager if self.device_manager else None)),  # 额外端口转发
         ], debug=self.config['proxy']['debug'])
 
     def run(self):
