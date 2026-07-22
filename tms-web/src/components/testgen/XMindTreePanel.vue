@@ -51,6 +51,9 @@ export default {
     // 会话级折叠状态：用户点"折叠用例"后置 true，下次 initMind / toME 时把所有 case 节点渲染为折叠
     // 不写入 store/Redis，纯本地 UI 行为
     let collapseAllCasesFlag = false
+    // 徽章渲染调度令牌：多次结构性重排（refresh/rebuild/流式增量）可能重叠触发，
+    // 只让最后一次调度在浏览器完成布局后执行，避免 DOM 未就绪导致部分节点找不到而漏渲染徽章
+    let badgeRenderToken = 0
 
     const PRIORITY_CONFIG = {
       'priority-1': { label: 'P0', color: '#f56c6c', number: '0' },
@@ -231,9 +234,7 @@ export default {
 
       if (mind) {
         mind.refresh(data)
-        setTimeout(function() {
-          renderPriorityBadges()
-        }, 0)
+        scheduleRenderBadges()
         return
       }
 
@@ -312,9 +313,7 @@ export default {
 
       mind.init(data)
 
-      setTimeout(function() {
-        renderPriorityBadges()
-      }, 0)
+      scheduleRenderBadges()
 
       // 生成中（disabled=true）：每次重建后把视图定位到最近新增的节点，避免被推出可视范围
       if (props.disabled) {
@@ -355,6 +354,12 @@ export default {
           syncLoadingStates()
           renderPriorityBadges()
         }, 0)
+      })
+
+      // 折叠/展开节点：mind-elixir 会重建被展开分支的节点 DOM，之前注入的徽章随之丢失，
+      // 需在展开后重新渲染，否则折叠目录再展开时其下用例的优先级徽章会消失
+      mind.bus.addListener('expandNode', function() {
+        scheduleRenderBadges()
       })
 
       // 监听右键菜单显示，动态控制菜单项可见性和顺序
@@ -467,15 +472,15 @@ export default {
             }
           }
           // 新增节点会触发父节点重新布局，徽章 wrapper 可能丢失，需重新渲染
-          setTimeout(function() { renderPriorityBadges() }, 0)
+          scheduleRenderBadges()
           emitUpdate()
         } else if (operation && operation.name === 'finishEdit') {
           // 编辑结束后 Mind Elixir 会重置节点 DOM，需要重新渲染徽章和包装
-          setTimeout(function() { renderPriorityBadges() }, 0)
+          scheduleRenderBadges()
           emitUpdate()
         } else {
           // 其它操作（移动、删除等）也可能影响节点 DOM，统一防御性重新渲染
-          setTimeout(function() { renderPriorityBadges() }, 0)
+          scheduleRenderBadges()
           emitUpdate()
         }
       })
@@ -584,6 +589,19 @@ export default {
     }
 
     // ---- 优先级编辑器 ----
+
+    // 在浏览器完成布局/绘制后再插入徽章。mind-elixir 的 init/refresh/layout 会重建节点 DOM，
+    // 紧跟其后的 setTimeout(0) 可能早于绘制完成，safeFindEle 对尚未落到 DOM 的节点返回 null，
+    // 导致只有部分用例渲染出优先级徽章。用双 rAF 等到绘制后执行，并以令牌去重，仅保留最后一次调度。
+    function scheduleRenderBadges() {
+      var token = ++badgeRenderToken
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          if (token !== badgeRenderToken) return
+          renderPriorityBadges()
+        })
+      })
+    }
 
     function renderPriorityBadges() {
       if (!mind || !container.value) return
@@ -776,12 +794,15 @@ export default {
       collapseAllCasesFlag = false
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, true)
+      // expandNodeAll 内部走 refresh 重建 DOM 且不触发 expandNode 事件，需手动补徽章
+      scheduleRenderBadges()
     }
 
     function collapseAll() {
       if (!mind) return
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, false)
+      scheduleRenderBadges()
     }
 
     /**
@@ -805,7 +826,7 @@ export default {
       mind.layout()
       mind.linkDiv()
       // layout 会清空 nodes 容器并重建 DOM，徽章 wrapper 会丢失，需重新渲染
-      setTimeout(function() { renderPriorityBadges() }, 0)
+      scheduleRenderBadges()
       // 居中回到根节点附近，避免历次平移残留导致的偏移
       if (mind.toCenter) mind.toCenter()
     }
@@ -837,8 +858,8 @@ export default {
       mind.layout()
       mind.linkDiv()
 
+      scheduleRenderBadges()
       setTimeout(function() {
-        renderPriorityBadges()
         syncLoadingStates()
       }, 50)
 
