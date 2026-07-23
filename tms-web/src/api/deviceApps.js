@@ -1,7 +1,6 @@
-// 设备应用管理 API —— 直连 agent 代理端点。
+// 设备应用管理 API —— 经 agentHttpBase 直连/反代 agent 代理端点。
 // 与后端 baseURL 不同源、无鉴权，故用原始 fetch/XHR，不走 src/api/index.js 的 axios 实例。
 // 该接口同时供自动化脚本直接调用（安装:POST 原始文件体 ?filename=；卸载:POST {id}）。
-// 基址经 agentHttpBase 计算：HTTPS 下走同源 /agent/<platform> 反代，避免混合内容拦截。
 
 import { agentHttpBase } from '@/utils/device'
 

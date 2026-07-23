@@ -106,6 +106,8 @@ spring:
 #
 #minio:
 #  endpoint: http://host:port
+  # 预签名 URL 对外前缀（配 nginx /minio/ 反代）：非空改写为 https://<host><prefix>/...，为空则不改写。默认 /minio
+#  public-path-prefix: /minio
 #  access-key: username
 #  secret-key: password
 #  bucket-name: bucket_name

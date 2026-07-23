@@ -115,11 +115,11 @@ public class MinioUtil {
                     .bucket(bucketName)
                     .object(fileName).build());
 
-            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+            return toPublicUrl(minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
                     .bucket(bucketName)
                     .object(fileName)
                     .method(Method.GET)
-                    .expiry(minioConfig.getExpire()).build());
+                    .expiry(minioConfig.getExpire()).build()));
 
         } catch (Exception e) {
             throw new RuntimeException("获取文件链接失败: " + e.getMessage());
@@ -139,15 +139,37 @@ public class MinioUtil {
             java.util.Map<String, String> queryParams = new java.util.HashMap<>();
             queryParams.put("response-content-disposition", "attachment; filename=\"" + downloadName + "\"");
 
-            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+            return toPublicUrl(minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
                     .bucket(bucketName)
                     .object(fileName)
                     .method(Method.GET)
                     .extraQueryParams(queryParams)
-                    .expiry(minioConfig.getExpire()).build());
+                    .expiry(minioConfig.getExpire()).build()));
         } catch (Exception e) {
             throw new RuntimeException("获取下载链接失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 按 minio.public-path-prefix 把预签名 URL 改写为 https://<endpoint-host><prefix>/...；前缀为空则原样返回。
+     * 仅换 scheme/host 并套上前缀，保留 path 与查询参数，不影响 S3 签名。
+     */
+    private String toPublicUrl(String presignedUrl) {
+        String prefix = minioConfig.getPublicPathPrefix();
+        String endpoint = minioConfig.getEndpoint();
+        if (prefix == null || prefix.isBlank()
+                || endpoint == null || presignedUrl == null
+                || !presignedUrl.startsWith(endpoint)) {
+            return presignedUrl;
+        }
+        // 规范化前缀：以 / 开头、不以 / 结尾
+        String p = prefix.startsWith("/") ? prefix : "/" + prefix;
+        if (p.endsWith("/")) {
+            p = p.substring(0, p.length() - 1);
+        }
+        String host = java.net.URI.create(endpoint).getHost();
+        // endpoint 之后即 /bucket/object?query，套上前缀、强制 https、去掉端口
+        return "https://" + host + p + presignedUrl.substring(endpoint.length());
     }
 
     /**
