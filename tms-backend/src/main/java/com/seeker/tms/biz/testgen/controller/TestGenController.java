@@ -57,14 +57,14 @@ public class TestGenController {
         return Result.success();
     }
 
-    @ApiOperation("生成测试点")
-    @PostMapping("/task/{taskId}/points")
-    public Result<?> generatePoints(@PathVariable Integer taskId) {
-        testGenService.generatePoints(taskId);
+    @ApiOperation("生成章节大纲")
+    @PostMapping("/task/{taskId}/plan")
+    public Result<?> generatePlan(@PathVariable Integer taskId) {
+        testGenService.generateOutline(taskId);
         return Result.success();
     }
 
-    @ApiOperation("确认大纲并触发测试点提取")
+    @ApiOperation("确认大纲并触发用例生成")
     @PostMapping("/task/{taskId}/confirm-plan")
     public Result<?> confirmPlan(@PathVariable Integer taskId,
                                  @RequestBody(required = false) OutlineVO outline) {
@@ -78,11 +78,13 @@ public class TestGenController {
         return Result.success(testGenService.getOutline(taskId));
     }
 
-    @ApiOperation("单个测试点生成用例")
-    @PostMapping("/task/{taskId}/point/{pointId}/generate")
-    public Result<?> generateCasesForPoint(@PathVariable Integer taskId,
-                                            @PathVariable String pointId) {
-        testGenService.generateCasesForPoint(taskId, pointId);
+    @ApiOperation("目录节点生成用例（可带补充需求，仅追加）")
+    @PostMapping("/task/{taskId}/node/{nodeId}/generate-cases")
+    public Result<?> generateCasesForNode(@PathVariable Integer taskId,
+                                          @PathVariable String nodeId,
+                                          @RequestBody(required = false) Map<String, String> body) {
+        String extraRequirement = body == null ? null : body.get("extraRequirement");
+        testGenService.generateCasesForNode(taskId, nodeId, extraRequirement);
         return Result.success();
     }
 
@@ -113,14 +115,19 @@ public class TestGenController {
         return Result.success();
     }
 
-    @ApiOperation("获取 XMind 下载链接")
+    @ApiOperation("获取导出文件下载链接（type=xmind|excel）")
     @GetMapping("/task/{taskId}/download-url")
-    public Result<String> getDownloadUrl(@PathVariable Integer taskId) {
+    public Result<String> getDownloadUrl(@PathVariable Integer taskId,
+                                         @RequestParam(required = false, defaultValue = "xmind") String type) {
         TaskVO task = testGenService.getTask(taskId);
-        if (task == null || task.getXmindFileName() == null) {
+        if (task == null) {
             return Result.fail();
         }
-        String url = minioUtil.getUrl(task.getXmindFileName());
+        String fileName = "excel".equalsIgnoreCase(type) ? task.getExcelFileName() : task.getXmindFileName();
+        if (fileName == null) {
+            return Result.fail();
+        }
+        String url = minioUtil.getUrl(fileName);
         return Result.success(url);
     }
 }

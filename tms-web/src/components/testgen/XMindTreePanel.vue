@@ -20,14 +20,13 @@
 </template>
 
 <script>
-import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, watch, onMounted, nextTick, computed } from 'vue'
 import MindElixir from 'mind-elixir'
 import { Loading } from '@element-plus/icons-vue'
 
 const NODE_COLORS = {
   root: '#2c3e50',
   module: '#3498db',
-  point: '#27ae60',
   case: '#8e44ad',
   step: '#e67e22',
   free: '#0097a7'
@@ -38,11 +37,11 @@ export default {
   components: { Loading },
   props: {
     treeData: { type: Object, default: null },
-    generatingPointIds: { type: Object, default: () => new Set() },
+    generatingNodeIds: { type: Object, default: () => new Set() },
     disabled: { type: Boolean, default: false },
     disabledTip: { type: String, default: '' }
   },
-  emits: ['update', 'generate-point'],
+  emits: ['update', 'generate-cases'],
   setup(props, { emit }) {
     const container = ref(null)
     const readonlyOnly = computed(() => /只读/.test(props.disabledTip || ''))
@@ -103,8 +102,8 @@ export default {
     }
 
     function syncLoadingStates() {
-      if (!mind || !props.generatingPointIds) return
-      props.generatingPointIds.forEach(function(id) {
+      if (!mind || !props.generatingNodeIds) return
+      props.generatingNodeIds.forEach(function(id) {
         applyLoadingState(id)
       })
     }
@@ -199,24 +198,18 @@ export default {
     }
 
     /**
-     * 找到当前树里"最末新增"的关注节点居中。优先级：
-     * 1) 最末一个 case 节点（生成用例阶段最新增）
-     * 2) 最末一个 point 节点（提取阶段最新增）
-     * 3) 整棵树居中
+     * 找到当前树里"最末新增"的用例节点居中，没有则整棵树居中。
      */
     function centerOnLatestNode() {
       if (!mind || !mind.nodeData) return
       var latestCase = null
-      var latestPoint = null
       function walk(node) {
         if (!node) return
         if (node.nodeType === 'case') latestCase = node
-        else if (node.nodeType === 'point') latestPoint = node
         if (node.children) node.children.forEach(walk)
       }
       walk(mind.nodeData)
-      var target = latestCase || latestPoint
-      if (target) centerOnNode(target.id)
+      if (latestCase) centerOnNode(latestCase.id)
       else if (mind.toCenter) mind.toCenter()
     }
 
@@ -247,8 +240,8 @@ export default {
               name: '生成用例',
               onclick: function() {
                 var selectedNode = mind.currentNode
-                if (selectedNode && selectedNode.nodeObj.nodeType === 'point') {
-                  emit('generate-point', selectedNode.nodeObj.id)
+                if (selectedNode && selectedNode.nodeObj.nodeType === 'module') {
+                  emit('generate-cases', selectedNode.nodeObj.id)
                 }
                 closeContextMenu()
               }
@@ -259,16 +252,6 @@ export default {
                 var selectedNode = mind.currentNode
                 if (selectedNode && canSetType(selectedNode.nodeObj, 'module')) {
                   setNodeType(selectedNode.nodeObj.id, 'module')
-                }
-                closeContextMenu()
-              }
-            },
-            {
-              name: '设为测试点',
-              onclick: function() {
-                var selectedNode = mind.currentNode
-                if (selectedNode && canSetType(selectedNode.nodeObj, 'point')) {
-                  setNodeType(selectedNode.nodeObj.id, 'point')
                 }
                 closeContextMenu()
               }
@@ -318,7 +301,7 @@ export default {
         setTimeout(function() { centerOnLatestNode() }, 0)
       }
 
-      // 拦截正在生成测试点的右键菜单
+      // 拦截正在生成用例的节点的右键菜单
       container.value.addEventListener('contextmenu', function(e) {
         var target = e.target
         while (target && target.tagName !== 'ME-TPC') {
@@ -331,7 +314,7 @@ export default {
           if (nodeId && nodeId.startsWith('me')) {
             nodeId = nodeId.substring(2)
           }
-          if (nodeId && props.generatingPointIds && props.generatingPointIds.has(nodeId)) {
+          if (nodeId && props.generatingNodeIds && props.generatingNodeIds.has(nodeId)) {
             e.preventDefault()
             e.stopPropagation()
             e.stopImmediatePropagation()
@@ -373,9 +356,8 @@ export default {
         var selectedNode = mind.currentNode
         var nodeObj = selectedNode ? selectedNode.nodeObj : null
 
-        // 如果是正在生成的测试点，阻止菜单显示
-        if (nodeObj && nodeObj.nodeType === 'point' &&
-            props.generatingPointIds && props.generatingPointIds.has(nodeObj.id)) {
+        // 如果目标节点正在生成用例，阻止菜单显示
+        if (nodeObj && props.generatingNodeIds && props.generatingNodeIds.has(nodeObj.id)) {
           return
         }
 
@@ -388,7 +370,7 @@ export default {
           var nodeObj = selectedNode ? selectedNode.nodeObj : null
 
           // 自定义菜单项名称列表（按期望顺序）
-          var customMenus = ['生成用例', '设为目录', '设为测试点', '设为用例', '设为自由节点']
+          var customMenus = ['生成用例', '设为目录', '设为用例', '设为自由节点']
           var customItems = []
           var nativeItems = []
 
@@ -408,15 +390,16 @@ export default {
           menuItems.forEach(function(li) {
             var text = li.querySelector('span')?.textContent
             if (text === '生成用例') {
-              var isPoint = nodeObj && nodeObj.nodeType === 'point'
-              var isGenerating = props.generatingPointIds && props.generatingPointIds.has(nodeObj && nodeObj.id)
+              // 目录（module）节点可生成用例；正在生成时置灰
+              var isModule = nodeObj && nodeObj.nodeType === 'module'
+              var isGenerating = props.generatingNodeIds && props.generatingNodeIds.has(nodeObj && nodeObj.id)
               var spanEl = li.querySelector('span')
-              if (isPoint && !isGenerating) {
+              if (isModule && !isGenerating) {
                 li.style.display = ''
                 li.style.opacity = ''
                 li.style.pointerEvents = ''
                 if (spanEl) spanEl.style.color = ''
-              } else if (isPoint && isGenerating) {
+              } else if (isModule && isGenerating) {
                 li.style.display = ''
                 li.style.opacity = ''
                 li.style.pointerEvents = 'none'
@@ -426,8 +409,6 @@ export default {
               }
             } else if (text === '设为目录') {
               li.style.display = (nodeObj && canSetType(nodeObj, 'module')) ? '' : 'none'
-            } else if (text === '设为测试点') {
-              li.style.display = (nodeObj && canSetType(nodeObj, 'point')) ? '' : 'none'
             } else if (text === '设为用例') {
               li.style.display = (nodeObj && canSetType(nodeObj, 'case')) ? '' : 'none'
             } else if (text === '设为自由节点') {
@@ -439,8 +420,8 @@ export default {
 
       mind.bus.addListener('operation', function(operation) {
         if (operation && operation.name === 'beginEdit') {
-          if (operation.obj && operation.obj.nodeType === 'point' &&
-              props.generatingPointIds && props.generatingPointIds.has(operation.obj.id)) {
+          if (operation.obj &&
+              props.generatingNodeIds && props.generatingNodeIds.has(operation.obj.id)) {
             var inputBox = document.getElementById('input-box')
             if (inputBox) inputBox.remove()
             return
@@ -503,8 +484,9 @@ export default {
       var parentType = findParentType(nodeObj.id)
 
       if (targetType === 'case') {
-        return parentType === 'point'
-      } else if (targetType === 'module' || targetType === 'point') {
+        // 用例挂在分类目录（module）下
+        return parentType === 'module'
+      } else if (targetType === 'module') {
         return parentType === 'module' || parentType === 'root'
       }
 
@@ -809,7 +791,7 @@ export default {
 
     /**
      * 一键折叠所有用例：把 nodeType === 'case' 的节点折起来（隐藏前置条件/步骤等子节点），
-     * 模块和测试点保持当前展开状态。
+     * 模块和用例节点保持当前展开状态。
      *
      * 实现说明：直接改 mind.nodeData 上 case 节点的 expanded=false，再调 mind.layout() 重排。
      * 不用 mind.expandNode(el, false) 逐个折叠 —— mind-elixir 5.11 的 expandNode 在折叠后
@@ -847,14 +829,14 @@ export default {
       }, 100)
     }
 
-    // 增量更新测试点的用例（不触发全量渲染）
-    function updatePointCases(pointId, cases) {
+    // 增量更新指定节点的子树（不触发全量渲染）。children 为后端推送的该节点最新子树
+    function updateNodeChildren(nodeId, children) {
       if (!mind) return
 
-      var pointNodeData = mind.getObjById(pointId, mind.nodeData)
-      if (!pointNodeData) return
+      var nodeData = mind.getObjById(nodeId, mind.nodeData)
+      if (!nodeData) return
 
-      pointNodeData.children = cases.map(function(c) { return toME(c, false) })
+      nodeData.children = (children || []).map(function(c) { return toME(c, false) })
 
       // 局部重新布局和渲染连接线，不触发全量刷新
       mind.layout()
@@ -865,23 +847,35 @@ export default {
         syncLoadingStates()
       }, 50)
 
-      // 生成期间：把刚加的最后一条用例居中（无用例时回退到 point 节点）
+      // 生成期间：把最新子树里最后一条用例居中，无用例时回退到该节点
       if (props.disabled) {
         setTimeout(function() {
-          var lastCase = cases && cases.length ? cases[cases.length - 1] : null
-          centerOnNode(lastCase ? lastCase.id : pointId)
+          var lastCase = findLastCase(nodeData)
+          centerOnNode(lastCase ? lastCase.id : nodeId)
         }, 60)
       }
 
       // 注意：流式中间态不调 emitUpdate 写回 store，避免 isInternalUpdate 屏蔽
-      // 后续接收的 POINTS_GENERATED 整树推送会作为权威更新触发 watch + 重建
+      // 后续接收的 TREE_UPDATED 整树推送会作为权威更新触发 watch + 重建
+    }
+
+    /** 在节点子树中找最后一个 case（mind-elixir nodeObj 结构，用 nodeType 字段） */
+    function findLastCase(node) {
+      var last = null
+      function walk(n) {
+        if (!n) return
+        if (n.nodeType === 'case') last = n
+        if (n.children) n.children.forEach(walk)
+      }
+      walk(node)
+      return last
     }
 
     // ---- 生命周期 ----
 
     /**
      * 强制销毁并重建 mind-elixir 实例。
-     * 用例生成阶段会高频调用 updatePointCases（直接改 nodeData + 局部 layout），mind-elixir 内部
+     * 用例生成阶段会高频调用 updateNodeChildren（直接改 nodeData + 局部 layout），mind-elixir 内部
      * 的 DOM↔nodeObj 映射、selection、disposable 等会逐步累积漂移；之后用户一缩放/再操作就可能把
      * 画布推出可视区或画成空白。生成结束这一刻销毁重建相当于"重进页面"，把状态清干净。
      */
@@ -911,7 +905,7 @@ export default {
       })
     })
 
-    watch(function() { return props.generatingPointIds }, function(newIds, oldIds) {
+    watch(function() { return props.generatingNodeIds }, function(newIds, oldIds) {
       if (!mind) return
       if (oldIds) {
         oldIds.forEach(function(id) {
@@ -927,13 +921,10 @@ export default {
       nextTick(initMind)
     })
 
-    onUnmounted(function() {
-    })
-
     return {
       container, readonlyOnly,
       expandAll, collapseAll, collapseAllCases, zoomIn, zoomOut, fitView,
-      updatePointCases, centerOnNode, rebuild
+      updateNodeChildren, centerOnNode, rebuild
     }
   }
 }

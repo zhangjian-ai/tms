@@ -1,9 +1,0 @@
-## 当前章节
-- 名称: {{chapterName}}
-- 内容摘要: {{chapterScope}}
-
-## 需求摘要
-{{summary}}
-
-## 需求文档
-{{doc}}

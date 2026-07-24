@@ -39,6 +39,9 @@ public class TaskVO {
     @ApiModelProperty("XMind文件名")
     private String xmindFileName;
 
+    @ApiModelProperty("用例Excel文件名")
+    private String excelFileName;
+
     @ApiModelProperty("创建时间")
     private LocalDateTime createTime;
 }

@@ -7,7 +7,7 @@
 
     <el-table :data="taskList" v-loading="loading" stripe header-cell-class-name="center-header">
       <el-table-column prop="id" label="ID" min-width="80" align="center" />
-      <el-table-column prop="prdName" label="需求文档" min-width="380" align="left">
+      <el-table-column prop="prdName" label="需求文档" min-width="260" align="left">
         <template #default="{ row }">
           <div
             v-for="(name, i) in displayDocLines(row)"
@@ -29,7 +29,7 @@
         </template>
       </el-table-column>
       <el-table-column prop="createTime" label="创建时间" min-width="180" align="center" :formatter="createTimeFormatter" />
-      <el-table-column label="操作" min-width="240" align="center" fixed="right">
+      <el-table-column label="操作" min-width="360" align="center" fixed="right">
         <template #default="{ row }">
           <el-button
             v-if="row.status === 'NEW'"
@@ -70,7 +70,8 @@
           >
             重新生成
           </el-button>
-          <el-button size="small" :disabled="!row.xmindFileName" @click="downloadXmind(row)">下载</el-button>
+          <el-button size="small" :disabled="!row.xmindFileName" @click="download(row, 'xmind')">下载XMind</el-button>
+          <el-button size="small" :disabled="!row.excelFileName" @click="download(row, 'excel')">下载Excel</el-button>
           <el-button size="small" type="danger" @click="deleteTask(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -449,9 +450,9 @@ export default {
       }
     }
 
-    const downloadXmind = async (row) => {
+    const download = async (row, type) => {
       try {
-        const res = await testgenApi.getDownloadUrl(row.id)
+        const res = await testgenApi.getDownloadUrl(row.id, type)
         if (res.code === 0 && res.data) {
           window.open(res.data, '_blank')
         } else {
@@ -500,7 +501,7 @@ export default {
       formatDateTime, createTimeFormatter, displayDocLines,
       fetchList, onPageChange, onSizeChange, beforeUpload,
       onMainSuccess, onMainRemove, onMainExceed, onRelatedSuccess, onRelatedRemove, onUploadError,
-      openCreateDialog, handleCreate, continueGen, regenerate, downloadXmind, deleteTask
+      openCreateDialog, handleCreate, continueGen, regenerate, download, deleteTask
     }
   }
 }

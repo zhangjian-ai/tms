@@ -16,7 +16,7 @@
         <el-button
           type="primary"
           @click="handleFinish"
-          :disabled="readonly || !store.treeData || isGeneratingPoints || generatingPointIds.size > 0"
+          :disabled="readonly || !store.treeData || isGenerating || generatingNodeIds.size > 0"
         >完成</el-button>
       </div>
     </div>
@@ -35,11 +35,11 @@
       <XMindTreePanel
         ref="treePanelRef"
         :tree-data="store.treeData"
-        :generating-point-ids="generatingPointIds"
+        :generating-node-ids="generatingNodeIds"
         :disabled="treeDisabled"
         :disabled-tip="disabledTip"
         @update="handleTreeUpdate"
-        @generate-point="handleGeneratePoint"
+        @generate-cases="handleGenerateForNode"
       />
     </div>
   </div>
@@ -67,7 +67,7 @@ export default {
     const userStore = useUserStore()
     const taskId = route.params.taskId
     const restoring = ref(true)
-    const generatingPointIds = ref(new Set())
+    const generatingNodeIds = ref(new Set())
     const treePanelRef = ref(null)
     const readonly = ref(false)
     const outline = ref(null)
@@ -101,8 +101,8 @@ export default {
       return map[store.task?.status] || 'info'
     })
 
-    // 是否在测试点生成阶段（显示全屏遮罩）
-    const isGeneratingPoints = computed(() => {
+    // 是否在生成阶段（规划/用例生成，显示全屏遮罩）
+    const isGenerating = computed(() => {
       return store.task?.status === 'GENERATING' || store.task?.status === 'PLANNING'
     })
 
@@ -137,9 +137,9 @@ export default {
           } else {
             store.setTreeData(res.data.treeData)
           }
-          // 恢复正在生成中的测试点状态
-          if (res.data.generatingPointIds && res.data.generatingPointIds.length > 0) {
-            generatingPointIds.value = new Set(res.data.generatingPointIds)
+          // 恢复正在生成中的节点 loading 态
+          if (res.data.generatingNodeIds && res.data.generatingNodeIds.length > 0) {
+            generatingNodeIds.value = new Set(res.data.generatingNodeIds)
           }
           // 恢复大纲（任务停留在 PLAN_REVIEW 时）
           if (res.data.outline) {
@@ -156,7 +156,7 @@ export default {
     function needsWs() {
       const { generate, regenerate } = route.query
       if (generate === 'true' || regenerate === 'true') return true
-      if (generatingPointIds.value.size > 0) return true
+      if (generatingNodeIds.value.size > 0) return true
       return store.task && (
         store.task.status === 'GENERATING' ||
         store.task.status === 'PLANNING' ||
@@ -235,12 +235,11 @@ export default {
         router.replace({ path: route.path })
         if (store.task) {
           store.task.status = 'GENERATING'
-          store.task.progress = 0
           store.task.message = '正在准备重新生成...'
         }
         try {
           await testgenApi.regenerateTask(taskId)
-          await testgenApi.generatePoints(taskId)
+          await testgenApi.generatePlan(taskId)
         } catch (e) {
           ElMessage.error('重新生成失败')
           console.error(e)
@@ -258,11 +257,10 @@ export default {
         router.replace({ path: route.path })
         if (store.task) {
           store.task.status = 'GENERATING'
-          store.task.progress = 0
           store.task.message = '正在准备生成...'
         }
         try {
-          await testgenApi.generatePoints(taskId)
+          await testgenApi.generatePlan(taskId)
         } catch (e) {
           ElMessage.error('生成失败')
           console.error(e)
@@ -302,7 +300,6 @@ export default {
           break
         case 'PROGRESS':
           if (store.task && store.task.status !== 'FINISHED') {
-            store.task.progress = msg.data.progress
             store.task.message = msg.data.message
           }
           break
@@ -311,7 +308,7 @@ export default {
             const prev = store.task.status
             store.task.status = msg.data.status
             store.task.message = msg.data.message
-            // 自动生成阶段彻底结束（GENERATING -> EDITING）：流式期间的 updatePointCases
+            // 自动生成阶段彻底结束（GENERATING -> EDITING）：流式期间的 updateNodeChildren
             // 累计改动会让 mind-elixir 内部状态漂移，此时缩放/再操作可能把画布推出可视区。
             // 这里销毁重建一次面板，相当于"重进页面"的干净初始化。
             if (prev === 'GENERATING' && msg.data.status === 'EDITING') {
@@ -329,37 +326,20 @@ export default {
         case 'PHASE_CHANGED':
           // 阶段切换：可在此驱动时间线 UI；目前只通过 task.status 间接体现
           break
-        case 'POINTS_GENERATED':
+        case 'TREE_UPDATED':
+          // 整树快照（提取/精修/阶段完成时的权威更新）
           store.setTreeData(msg.data)
           break
-        case 'POINT_ADDED':
-          // 流式新增单个测试点：树重建后由后端指定的 latestNodeId 精确居中
-          if (msg.data && msg.data.root) {
-            store.setTreeData(msg.data.root)
-            if (treePanelRef.value && msg.data.latestNodeId) {
-              // 等待 watch -> initMind 完成后再居中
-              setTimeout(function () {
-                if (treePanelRef.value && treePanelRef.value.centerOnNode) {
-                  treePanelRef.value.centerOnNode(msg.data.latestNodeId)
-                }
-              }, 100)
-            }
-          }
-          break
-        case 'POINT_CASES_GENERATED':
+        case 'NODE_CASES_GENERATED':
           if (msg.data.done) {
-            var doneSet = new Set(generatingPointIds.value)
-            doneSet.delete(msg.data.pointId)
-            generatingPointIds.value = doneSet
+            var doneSet = new Set(generatingNodeIds.value)
+            doneSet.delete(msg.data.nodeId)
+            generatingNodeIds.value = doneSet
           }
-          // 流式期间：累积更新 point 节点的子用例（done=true 也同样以最终 cases 列表覆盖一次）
-          if (treePanelRef.value && msg.data.cases) {
-            treePanelRef.value.updatePointCases(msg.data.pointId, msg.data.cases)
+          // 流式期间：以后端推送的最新子树覆盖该节点（done=true 也以最终子树覆盖一次）
+          if (treePanelRef.value && msg.data.children) {
+            treePanelRef.value.updateNodeChildren(msg.data.nodeId, msg.data.children)
           }
-          break
-        case 'CASES_GENERATED':
-          store.setTreeData(msg.data)
-          if (store.task) store.task.status = 'FINISHED'
           break
         case 'ERROR':
           ElMessage.error(msg.data.error || '发生错误')
@@ -394,55 +374,44 @@ export default {
       await testgenApi.saveXMindData(taskId, updatedTree)
     }
 
-    function findNodeById(node, id) {
-      if (!node) return null
-      if (node.id === id) return node
-      if (!node.children) return null
-      for (const c of node.children) {
-        const found = findNodeById(c, id)
-        if (found) return found
-      }
-      return null
-    }
-
-    async function handleGeneratePoint(pointId) {
+    async function handleGenerateForNode(nodeId) {
       if (readonly.value) {
         ElMessage.warning('当前为只读模式，无法生成')
         return
       }
-      if (generatingPointIds.value.has(pointId)) {
-        ElMessage.warning('该测试点正在生成用例中，请稍候...')
+      if (generatingNodeIds.value.has(nodeId)) {
+        ElMessage.warning('该目录正在生成用例中，请稍候...')
         return
       }
-      // 已有用例的测试点：二次确认（后端会清空旧用例后重新生成）
-      const pointNode = findNodeById(store.treeData, pointId)
-      const existingCases = (pointNode?.children || []).filter(c => c.type === 'case')
-      if (existingCases.length > 0) {
-        try {
-          await ElMessageBox.confirm(
-            `该测试点下已有 ${existingCases.length} 条用例，重新生成将清空现有用例，确定继续？`,
-            '确认重新生成',
-            { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
-          )
-        } catch (e) {
-          return
-        }
-      }
-      const next = new Set(generatingPointIds.value)
-      next.add(pointId)
-      generatingPointIds.value = next
-      // 立即清空面板上该测试点的旧用例，避免新用例到达前看到陈旧内容
-      // （与流式增量推送一致，只动 mind 内存数据，权威状态由后端 ws 推送回填）
-      if (existingCases.length > 0 && treePanelRef.value) {
-        treePanelRef.value.updatePointCases(pointId, [])
-      }
-      ElMessage.info('正在为该测试点生成用例...')
+      // 弹框收集补充测试内容（必填），基于完整需求文档 + 补充测试内容为该目录生成用例（仅追加）
+      let extraRequirement = ''
       try {
-        await testgenApi.generateCasesForPoint(taskId, pointId)
+        const { value } = await ElMessageBox.prompt(
+          '请填写要补充的测试内容，将结合需求文档为该目录生成用例',
+          '生成用例',
+          {
+            confirmButtonText: '生成',
+            cancelButtonText: '取消',
+            inputType: 'textarea',
+            inputPlaceholder: '例如：补充某个边界场景 / 指定关注的功能点……',
+            inputValidator: (val) => (val && val.trim()) ? true : '请填写补充测试内容'
+          }
+        )
+        extraRequirement = (value || '').trim()
       } catch (e) {
-        const rollback = new Set(generatingPointIds.value)
-        rollback.delete(pointId)
-        generatingPointIds.value = rollback
+        return
+      }
+      if (!extraRequirement) return
+      const next = new Set(generatingNodeIds.value)
+      next.add(nodeId)
+      generatingNodeIds.value = next
+      ElMessage.info('正在为该目录生成用例...')
+      try {
+        await testgenApi.generateCasesForNode(taskId, nodeId, { extraRequirement })
+      } catch (e) {
+        const rollback = new Set(generatingNodeIds.value)
+        rollback.delete(nodeId)
+        generatingNodeIds.value = rollback
         ElMessage.error('生成失败')
       }
     }
@@ -452,12 +421,12 @@ export default {
         ElMessage.warning('当前为只读模式，无法完成任务')
         return
       }
-      if (generatingPointIds.value.size > 0) {
-        ElMessage.warning('还有测试点正在生成用例，请等待完成后再操作')
+      if (generatingNodeIds.value.size > 0) {
+        ElMessage.warning('还有目录正在生成用例，请等待完成后再操作')
         return
       }
       try {
-        await ElMessageBox.confirm('确定完成？完成后可在列表页下载 XMind 文件。', '提示')
+        await ElMessageBox.confirm('确定完成？完成后可在列表页下载 XMind、Excel 文件。', '提示')
         await testgenApi.finishTask(taskId)
         ElMessage.success('任务已完成')
         router.push('/toolbox/testgen')
@@ -497,10 +466,10 @@ export default {
 
     return {
       store, restoring, statusText, statusType,
-      generatingPointIds, isGeneratingPoints, treePanelRef, readonly,
+      generatingNodeIds, isGenerating, treePanelRef, readonly,
       outline, outlineConfirming, showOutlinePanel,
       treeDisabled, disabledTip,
-      handleTreeUpdate, handleGeneratePoint,
+      handleTreeUpdate, handleGenerateForNode,
       handleFinish, handleConfirmOutline, goBack
     }
   }

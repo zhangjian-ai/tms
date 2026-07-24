@@ -104,22 +104,33 @@ public class MinioUtil {
     }
 
     /**
-     * 获取文件临时访问链接，链接默认有效时间300s
+     * 获取文件临时访问链接（对外）：经 toPublicUrl 改写为 https 前缀，供前端下载/预览。
      */
     public String getUrl(String fileName) {
-        String bucketName = minioConfig.getBucketName();
+        return toPublicUrl(presignGet(fileName));
+    }
 
+    /**
+     * 获取文件临时访问链接（服务端内部）：直连 endpoint，不做 https 改写，供后端 OkHttp 拉取解析。
+     */
+    public String getInternalUrl(String fileName) {
+        return presignGet(fileName);
+    }
+
+    /** 生成 GET 预签名 URL（先 statObject 校验存在）；不做任何对外改写。 */
+    private String presignGet(String fileName) {
+        String bucketName = minioConfig.getBucketName();
         try {
             // 检查文件状态，不存在时会抛出异常
             minioClient.statObject(StatObjectArgs.builder()
                     .bucket(bucketName)
                     .object(fileName).build());
 
-            return toPublicUrl(minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
                     .bucket(bucketName)
                     .object(fileName)
                     .method(Method.GET)
-                    .expiry(minioConfig.getExpire()).build()));
+                    .expiry(minioConfig.getExpire()).build());
 
         } catch (Exception e) {
             throw new RuntimeException("获取文件链接失败: " + e.getMessage());

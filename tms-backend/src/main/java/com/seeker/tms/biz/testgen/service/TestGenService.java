@@ -9,10 +9,10 @@ public interface TestGenService {
     TaskVO getTask(Integer taskId);
     XMindNode getXMindData(Integer taskId);
     void saveXMindData(Integer taskId, XMindNode root);
-    void generatePoints(Integer taskId);
+    void generateOutline(Integer taskId);
     void confirmPlan(Integer taskId, OutlineVO outline);
     OutlineVO getOutline(Integer taskId);
-    void generateCasesForPoint(Integer taskId, String pointId);
+    void generateCasesForNode(Integer taskId, String nodeId, String extraRequirement);
     String finishTask(Integer taskId);
     void regenerateTask(Integer taskId);
     RestoreVO restoreTask(Integer taskId);

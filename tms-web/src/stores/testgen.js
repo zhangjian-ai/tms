@@ -5,7 +5,6 @@ export const useTestGenStore = defineStore('testgen', () => {
   const task = ref(null)
   const treeData = ref(null)
   const wsConnected = ref(false)
-  const generating = ref(false)
 
   function setTask(t) { task.value = t }
   function setTreeData(d) { treeData.value = d }
@@ -13,8 +12,7 @@ export const useTestGenStore = defineStore('testgen', () => {
     task.value = null
     treeData.value = null
     wsConnected.value = false
-    generating.value = false
   }
 
-  return { task, treeData, wsConnected, generating, setTask, setTreeData, reset }
+  return { task, treeData, wsConnected, setTask, setTreeData, reset }
 })

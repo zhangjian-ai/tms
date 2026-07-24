@@ -176,26 +176,17 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
         sendMessage(taskId, "TASK_STATUS", Map.of("status", status, "message", message));
     }
 
-    public static void sendPointsGenerated(String taskId, Object testPoints) {
-        sendMessage(taskId, "POINTS_GENERATED", testPoints);
-    }
-
-    /** 流式新增单个测试点：携带新节点 id，前端可据此精确居中到刚加的节点 */
-    public static void sendPointAdded(String taskId, Object root, String latestNodeId) {
-        sendMessage(taskId, "POINT_ADDED",
-                Map.of("root", root, "latestNodeId", latestNodeId == null ? "" : latestNodeId));
-    }
-
-    public static void sendCasesGenerated(String taskId, Object testCases) {
-        sendMessage(taskId, "CASES_GENERATED", testCases);
+    public static void sendTreeUpdated(String taskId, Object root) {
+        sendMessage(taskId, "TREE_UPDATED", root);
     }
 
     public static void sendError(String taskId, String error) {
         sendMessage(taskId, "ERROR", Map.of("error", error));
     }
 
-    public static void sendPointCasesGenerated(String taskId, String pointId, Object cases, boolean done) {
-        sendMessage(taskId, "POINT_CASES_GENERATED", Map.of("pointId", pointId, "cases", cases, "done", done));
+    /** 流式生成用例：children 替换指定节点的子树（章节模块子树增量 / 手动目录追加） */
+    public static void sendNodeCasesGenerated(String taskId, String nodeId, Object children, boolean done) {
+        sendMessage(taskId, "NODE_CASES_GENERATED", Map.of("nodeId", nodeId, "children", children, "done", done));
     }
 
     /** 规划阶段：已生成大纲，等待用户确认 */
@@ -203,7 +194,7 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
         sendMessage(taskId, "PLAN_DRAFTED", Map.of("outline", outline));
     }
 
-    /** 阶段切换：phase 取值 PLANNING / EXTRACTING / REFINING / GENERATING_CASES / EDITING / DONE */
+    /** 阶段切换：phase 取值 PLANNING / GENERATING_CASES / REFINING / EDITING / DONE */
     public static void sendPhaseChanged(String taskId, String phase, String message) {
         sendMessage(taskId, "PHASE_CHANGED", Map.of("phase", phase, "message", message == null ? "" : message));
     }

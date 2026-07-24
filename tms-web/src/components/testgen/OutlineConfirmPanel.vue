@@ -3,7 +3,7 @@
     <div class="panel-header">
       <h3>请确认或调整需求章节大纲</h3>
       <p class="hint">
-        大纲是对需求文档的章节摘要，每条章节会单独喂给 AI 提取测试点。可在此增删章节、修改摘要。
+        大纲是对需求文档的章节摘要，每条章节会单独喂给 AI 生成测试用例。可在此增删章节、修改摘要。
         <el-button type="primary" link size="small" @click="guideOpen = !guideOpen">
           {{ guideOpen ? '收起说明' : '查看说明' }}
         </el-button>
@@ -15,7 +15,7 @@
           <ul class="guide-list">
             <li>
               <strong>需求摘要：</strong>
-              一句话概括本次需求的总体目标，影响后续 AI 提点的全局视角。
+              一句话概括本次需求的总体目标，影响后续 AI 生成用例的全局视角。
             </li>
             <li>
               <strong>章节名：</strong>
@@ -27,7 +27,7 @@
             </li>
             <li>
               <strong>增删的影响：</strong>
-              新增章节 = AI 会专门为它提取一组测试点；删除章节 = 该章节下的内容不会被覆盖。章节越细，提点越聚焦但耗时更长。
+              新增章节 = AI 会专门为它生成一组测试用例；删除章节 = 该章节下的内容不会被覆盖。章节越细，用例越聚焦但耗时更长。
             </li>
             <li>
               <strong>规模建议：</strong>
@@ -85,7 +85,7 @@
     <div class="panel-footer">
       <el-button @click="$emit('cancel')">取消</el-button>
       <el-button type="primary" :loading="loading" @click="onConfirm">
-        确认并生成测试点
+        确认并生成用例
       </el-button>
     </div>
   </div>

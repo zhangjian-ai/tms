@@ -2,8 +2,8 @@
 - 名称: {{chapterName}}
 - 内容摘要: {{chapterScope}}
 
-## 本章节现有测试点清单
-{{points}}
+## 本章节现有测试用例清单
+{{cases}}
 
 ## 需求文档
 {{doc}}

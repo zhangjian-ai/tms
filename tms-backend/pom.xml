@@ -200,6 +200,14 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- 覆盖 Spring Boot 2.6 BOM 钉死的 commons-compress 1.21：
+                 POI 5.2.5 写 xlsx 需要 1.24+ 的 ZipArchiveOutputStream.putArchiveEntry(ZipArchiveEntry)，
+                 否则完成任务导出 Excel 时抛 NoSuchMethodError。 -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.25.0</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 

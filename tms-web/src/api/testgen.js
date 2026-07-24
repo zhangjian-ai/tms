@@ -16,8 +16,8 @@ export const testgenApi = {
   saveXMindData(taskId, treeData) {
     return api.put(`/testgen/task/${taskId}/xmind`, treeData)
   },
-  generatePoints(taskId) {
-    return api.post(`/testgen/task/${taskId}/points`)
+  generatePlan(taskId) {
+    return api.post(`/testgen/task/${taskId}/plan`)
   },
   confirmPlan(taskId, outline) {
     return api.post(`/testgen/task/${taskId}/confirm-plan`, outline)
@@ -25,8 +25,8 @@ export const testgenApi = {
   getOutline(taskId) {
     return api.get(`/testgen/task/${taskId}/outline`)
   },
-  generateCasesForPoint(taskId, pointId) {
-    return api.post(`/testgen/task/${taskId}/point/${pointId}/generate`)
+  generateCasesForNode(taskId, nodeId, body) {
+    return api.post(`/testgen/task/${taskId}/node/${nodeId}/generate-cases`, body || {})
   },
   finishTask(taskId) {
     return api.post(`/testgen/task/${taskId}/finish`)
@@ -40,8 +40,8 @@ export const testgenApi = {
   deleteTask(taskId) {
     return api.delete(`/testgen/task/${taskId}`)
   },
-  getDownloadUrl(taskId) {
-    return api.get(`/testgen/task/${taskId}/download-url`)
+  getDownloadUrl(taskId, type) {
+    return api.get(`/testgen/task/${taskId}/download-url`, { params: type ? { type } : {} })
   }
 }
 
