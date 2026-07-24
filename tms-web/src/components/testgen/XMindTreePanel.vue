@@ -51,8 +51,7 @@ export default {
     // 会话级折叠状态：用户点"折叠用例"后置 true，下次 initMind / toME 时把所有 case 节点渲染为折叠
     // 不写入 store/Redis，纯本地 UI 行为
     let collapseAllCasesFlag = false
-    // 徽章渲染调度令牌：多次结构性重排（refresh/rebuild/流式增量）可能重叠触发，
-    // 只让最后一次调度在浏览器完成布局后执行，避免 DOM 未就绪导致部分节点找不到而漏渲染徽章
+    // 徽章渲染调度令牌：多次重排重叠触发时，只让最后一次在布局完成后执行
     let badgeRenderToken = 0
 
     const PRIORITY_CONFIG = {
@@ -292,8 +291,7 @@ export default {
                 if (selectedNode && canResetToFree(selectedNode.nodeObj)) {
                   setNodeType(selectedNode.nodeObj.id, 'free')
                   setChildrenType(selectedNode.nodeObj, 'free')
-                  // setChildrenType 只清了子节点 priority 数据不重渲，而 setNodeType 内部那次重渲
-                  // 发生在子节点 priority 清空之前，故需在数据全部改完后再重建一次徽章
+                  // 数据全部改完后重建徽章，清除子节点残留的优先级徽章
                   renderPriorityBadges()
                 }
                 closeContextMenu()
@@ -342,6 +340,15 @@ export default {
         }
       }, true)
 
+      // IME 合成（中文拼音选字）中按回车只是确认候选词，捕获阶段拦掉，
+      // 避免 mind-elixir 把它当成结束编辑；不 preventDefault，输入法照常工作
+      container.value.addEventListener('keydown', function(e) {
+        var t = e.target
+        if (t && t.id === 'input-box' && (e.isComposing || e.keyCode === 229)) {
+          e.stopPropagation()
+        }
+      }, true)
+
       // 选中节点后重新应用闪动 class（防止被 Mind Elixir 清除），并重建徽章布局
       mind.bus.addListener('selectNode', function() {
         setTimeout(function() {
@@ -356,8 +363,7 @@ export default {
         }, 0)
       })
 
-      // 折叠/展开节点：mind-elixir 会重建被展开分支的节点 DOM，之前注入的徽章随之丢失，
-      // 需在展开后重新渲染，否则折叠目录再展开时其下用例的优先级徽章会消失
+      // 折叠/展开会重建节点 DOM，注入的徽章随之丢失，需重新渲染
       mind.bus.addListener('expandNode', function() {
         scheduleRenderBadges()
       })
@@ -554,7 +560,7 @@ export default {
           child.priority = null
         }
 
-        // 节点可能被祖先折叠（如 case 折叠状态下设置为自由节点），DOM 不存在时只同步数据
+        // 节点可能被折叠，DOM 不存在时只同步数据
         var tpcEl = safeFindEle(child.id)
         if (tpcEl) {
           tpcEl.style.background = bg
@@ -790,7 +796,7 @@ export default {
       collapseAllCasesFlag = false
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, true)
-      // expandNodeAll 内部走 refresh 重建 DOM 且不触发 expandNode 事件，需手动补徽章
+      // expandNodeAll 不触发 expandNode 事件，需手动补徽章
       scheduleRenderBadges()
     }
 
