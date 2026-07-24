@@ -30,7 +30,7 @@ const NODE_COLORS = {
   point: '#27ae60',
   case: '#8e44ad',
   step: '#e67e22',
-  free: 'transparent'
+  free: '#0097a7'
 }
 
 export default {
@@ -114,11 +114,8 @@ export default {
 
     function toME(node, isRoot) {
       if (!node) return null
-      var isFree = node.type === 'free'
       var failed = Array.isArray(node.icons) && node.icons.indexOf('failed') >= 0
-      var baseStyle = isFree
-        ? { background: 'transparent', color: '#333' }
-        : { background: NODE_COLORS[node.type] || NODE_COLORS.step, color: '#fff' }
+      var baseStyle = { background: NODE_COLORS[node.type] || NODE_COLORS.step, color: '#fff' }
       if (failed) {
         baseStyle.border = '2px solid #f56c6c'
       }
@@ -295,6 +292,9 @@ export default {
                 if (selectedNode && canResetToFree(selectedNode.nodeObj)) {
                   setNodeType(selectedNode.nodeObj.id, 'free')
                   setChildrenType(selectedNode.nodeObj, 'free')
+                  // setChildrenType 只清了子节点 priority 数据不重渲，而 setNodeType 内部那次重渲
+                  // 发生在子节点 priority 清空之前，故需在数据全部改完后再重建一次徽章
+                  renderPriorityBadges()
                 }
                 closeContextMenu()
               }
@@ -464,11 +464,11 @@ export default {
           // 新创建的节点，设置为自由节点样式
           if (operation.obj) {
             operation.obj.nodeType = 'free'
-            operation.obj.style = { background: 'transparent', color: '#333' }
+            operation.obj.style = { background: NODE_COLORS.free, color: '#fff' }
             var tpcEl = safeFindEle(operation.obj.id)
             if (tpcEl) {
-              tpcEl.style.background = 'transparent'
-              tpcEl.style.color = '#333'
+              tpcEl.style.background = NODE_COLORS.free
+              tpcEl.style.color = '#fff'
             }
           }
           // 新增节点会触发父节点重新布局，徽章 wrapper 可能丢失，需重新渲染
@@ -511,11 +511,9 @@ export default {
       var nodeData = mind.getObjById(nodeId, mind.nodeData)
       if (!nodeData) return
 
-      var isFree = newType === 'free'
+      var bg = NODE_COLORS[newType] || NODE_COLORS.step
       nodeData.nodeType = newType
-      nodeData.style = isFree
-        ? { background: 'transparent', color: '#333' }
-        : { background: NODE_COLORS[newType] || NODE_COLORS.step, color: '#fff' }
+      nodeData.style = { background: bg, color: '#fff' }
 
       // 设为用例时，自动添加 P2 优先级（如果没有优先级）
       if (newType === 'case' && !nodeData.priority) {
@@ -529,8 +527,8 @@ export default {
 
       var tpcEl = safeFindEle(nodeId)
       if (tpcEl) {
-        tpcEl.style.background = isFree ? 'transparent' : (NODE_COLORS[newType] || NODE_COLORS.step)
-        tpcEl.style.color = isFree ? '#333' : '#fff'
+        tpcEl.style.background = bg
+        tpcEl.style.color = '#fff'
       }
 
       renderPriorityBadges()
@@ -540,13 +538,11 @@ export default {
 
     function setChildrenType(nodeObj, newType) {
       if (!nodeObj || !nodeObj.children) return
-      var isFree = newType === 'free'
-      var bg = isFree ? 'transparent' : (NODE_COLORS[newType] || NODE_COLORS.step)
-      var fg = isFree ? '#333' : '#fff'
+      var bg = NODE_COLORS[newType] || NODE_COLORS.step
       for (var i = 0; i < nodeObj.children.length; i++) {
         var child = nodeObj.children[i]
         child.nodeType = newType
-        child.style = { background: bg, color: fg }
+        child.style = { background: bg, color: '#fff' }
 
         // 设为用例时，自动添加 P2 优先级（如果没有优先级）
         if (newType === 'case' && !child.priority) {
@@ -562,7 +558,7 @@ export default {
         var tpcEl = safeFindEle(child.id)
         if (tpcEl) {
           tpcEl.style.background = bg
-          tpcEl.style.color = fg
+          tpcEl.style.color = '#fff'
         }
         setChildrenType(child, newType)
       }
