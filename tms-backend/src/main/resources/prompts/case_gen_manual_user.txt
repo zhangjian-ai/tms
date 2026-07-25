@@ -5,7 +5,7 @@
 {{chapterName}}
 {{chapterScope}}
 
-## 补充测试内容
+## 测试点
 {{extra}}
 
 ## 需求文档

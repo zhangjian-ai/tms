@@ -309,7 +309,6 @@ export default {
             store.task.status = msg.data.status
             store.task.message = msg.data.message
             // 自动生成阶段彻底结束（GENERATING -> EDITING）：流式期间的 updateNodeChildren
-            // 累计改动会让 mind-elixir 内部状态漂移，此时缩放/再操作可能把画布推出可视区。
             // 这里销毁重建一次面板，相当于"重进页面"的干净初始化。
             if (prev === 'GENERATING' && msg.data.status === 'EDITING') {
               setTimeout(() => {
@@ -365,13 +364,55 @@ export default {
       }
     }
 
-    async function handleTreeUpdate(updatedTree) {
+    // ---- 云端保存：防抖 + 失败重试 ----
+    // 面板每次操作都会触发 handleTreeUpdate，这里对「网络保存」做防抖，
+    // 合并短时间内的多次改动为一次全量 PUT；store 仍即时更新以保证 UI 响应。
+    let saveTimer = null
+    let pendingTree = null
+    const SAVE_DEBOUNCE_MS = 600
+
+    // 保存一次，失败则延迟重试一次，仍失败才 toast 提示（避免本地已改、云端未存却无感知）
+    async function doSaveWithRetry(tree) {
+      try {
+        await testgenApi.saveXMindData(taskId, tree)
+      } catch (e) {
+        await new Promise(function(r) { setTimeout(r, 800) })
+        try {
+          await testgenApi.saveXMindData(taskId, tree)
+        } catch (e2) {
+          ElMessage.error('用例改动保存到云端失败，请检查网络后重试')
+        }
+      }
+    }
+
+    function scheduleSave(tree) {
+      pendingTree = tree
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(function() {
+        saveTimer = null
+        var t = pendingTree
+        pendingTree = null
+        if (t) doSaveWithRetry(t)
+      }, SAVE_DEBOUNCE_MS)
+    }
+
+    // 立即冲刷未落库的改动（离开页面 / 卸载时调用），避免防抖窗口内的最后一次改动丢失
+    function flushSave() {
+      if (!saveTimer) return
+      clearTimeout(saveTimer)
+      saveTimer = null
+      var t = pendingTree
+      pendingTree = null
+      if (t) doSaveWithRetry(t)
+    }
+
+    function handleTreeUpdate(updatedTree) {
       if (readonly.value) {
         ElMessage.warning('当前为只读模式，无法修改')
         return
       }
       store.setTreeData(updatedTree)
-      await testgenApi.saveXMindData(taskId, updatedTree)
+      scheduleSave(updatedTree)
     }
 
     async function handleGenerateForNode(nodeId) {
@@ -457,6 +498,7 @@ export default {
     })
 
     onUnmounted(() => {
+      flushSave()
       stopHeartbeat()
       if (ws) ws.close()
       if (reconnectTimer) clearTimeout(reconnectTimer)

@@ -1,6 +1,5 @@
 package com.seeker.tms.biz.testgen.service.impl;
 
-import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.seeker.tms.biz.testgen.entities.XMindNode;

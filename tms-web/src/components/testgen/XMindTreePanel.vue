@@ -23,14 +23,7 @@
 import { ref, watch, onMounted, nextTick, computed } from 'vue'
 import MindElixir from 'mind-elixir'
 import { Loading } from '@element-plus/icons-vue'
-
-const NODE_COLORS = {
-  root: '#2c3e50',
-  module: '#3498db',
-  case: '#8e44ad',
-  step: '#e67e22',
-  free: '#0097a7'
-}
+import { NODE_COLORS, PRIORITY_CONFIG, generateMainBranch, generateSubBranch } from './xmindTheme'
 
 export default {
   name: 'XMindTreePanel',
@@ -52,13 +45,6 @@ export default {
     let collapseAllCasesFlag = false
     // 徽章渲染调度令牌：多次重排重叠触发时，只让最后一次在布局完成后执行
     let badgeRenderToken = 0
-
-    const PRIORITY_CONFIG = {
-      'priority-1': { label: 'P0', color: '#f56c6c', number: '0' },
-      'priority-2': { label: 'P1', color: '#f78989', number: '1' },
-      'priority-3': { label: 'P2', color: '#f0ad4e', number: '2' },
-      'priority-4': { label: 'P3', color: '#67c23a', number: '3' }
-    }
 
     // ---- 加载态管理 ----
 
@@ -113,7 +99,8 @@ export default {
     function toME(node, isRoot) {
       if (!node) return null
       var failed = Array.isArray(node.icons) && node.icons.indexOf('failed') >= 0
-      var baseStyle = { background: NODE_COLORS[node.type] || NODE_COLORS.step, color: '#fff' }
+      var typeColor = NODE_COLORS[node.type] || NODE_COLORS.step
+      var baseStyle = { background: typeColor, color: '#fff' }
       if (failed) {
         baseStyle.border = '2px solid #f56c6c'
       }
@@ -122,6 +109,8 @@ export default {
         id: node.id,
         style: baseStyle,
         nodeType: node.type,
+        // 连线颜色跟随节点类型色（mind-elixir 优先取 nodeObj.branchColor 给入线着色）
+        branchColor: typeColor,
         failed: failed
       }
       if (isRoot) me.root = true
@@ -287,9 +276,10 @@ export default {
         keypress: true,
         locale: 'zh_CN',
         overflowHidden: false,
-        mainNodeVerticalGap: 15,
-        mainNodeHorizontalGap: 65,
-        mouseSelectionButton: 2
+        mouseSelectionButton: 2,
+        // 直角折线连线（见 xmindTheme.js）；层级横向间距由 CSS 变量统一控制
+        generateMainBranch: generateMainBranch,
+        generateSubBranch: generateSubBranch
       })
 
       mind.init(data)
@@ -452,6 +442,7 @@ export default {
           if (operation.obj) {
             operation.obj.nodeType = 'free'
             operation.obj.style = { background: NODE_COLORS.free, color: '#fff' }
+            operation.obj.branchColor = NODE_COLORS.free
             var tpcEl = safeFindEle(operation.obj.id)
             if (tpcEl) {
               tpcEl.style.background = NODE_COLORS.free
@@ -502,6 +493,7 @@ export default {
       var bg = NODE_COLORS[newType] || NODE_COLORS.step
       nodeData.nodeType = newType
       nodeData.style = { background: bg, color: '#fff' }
+      nodeData.branchColor = bg
 
       // 设为用例时，自动添加 P2 优先级（如果没有优先级）
       if (newType === 'case' && !nodeData.priority) {
@@ -531,6 +523,7 @@ export default {
         var child = nodeObj.children[i]
         child.nodeType = newType
         child.style = { background: bg, color: '#fff' }
+        child.branchColor = bg
 
         // 设为用例时，自动添加 P2 优先级（如果没有优先级）
         if (newType === 'case' && !child.priority) {
@@ -980,13 +973,34 @@ export default {
 
 <style>
 /* Mind Elixir 样式微调 */
+/* 节点最大宽度：显示与编辑态统一取此值（短节点编辑时也放大到这个宽度） */
+.map-container {
+  --tms-node-max-width: 20em;
+}
 .map-container me-root me-tpc {
   font-size: 16px !important;
   font-weight: 600 !important;
 }
+/* root 与一级节点统一为长方形，与用例目录节点（me-parent me-tpc）一致 */
+.map-container me-root me-tpc,
+.map-container me-main > me-wrapper > me-parent > me-tpc {
+  border: none !important;
+  border-radius: 3px !important;
+  padding: var(--topic-padding) !important;
+}
+/* ---- 统一各层级父子横向间距 ---- */
+.map-container me-main > me-wrapper > me-parent {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding: 1px var(--node-gap-x) !important;
+}
+.map-container me-main > me-wrapper {
+  margin-left: var(--node-gap-x) !important;
+  margin-right: var(--node-gap-x) !important;
+}
 /* 非 root 节点最大宽度调整为原 35em 的 2/3，短内容仍自适应 */
 .map-container me-parent me-tpc {
-  max-width: 23.3em !important;
+  max-width: var(--tms-node-max-width) !important;
   word-break: break-word;
 }
 /* 带优先级徽章的节点：用 flex 布局让徽章保持在节点前端整体的垂直中心，文本可换行 */
@@ -1008,17 +1022,32 @@ export default {
 .map-container .selected me-tpc {
   box-shadow: 0 0 0 2px #409eff !important;
 }
+/* 连线：直角折线 + 跟随节点类型色（stroke 由 branchColor 决定，不再统一覆盖成灰）。
+   fill:none 防止折线被闭合填充；miter + butt 让转角保持尖直角。 */
 .map-container .lines path,
 .map-container .subLines path {
+  fill: none !important;
   stroke-width: 2 !important;
-  stroke: #ddd !important;
+  stroke-linejoin: miter !important;
+  stroke-linecap: butt !important;
 }
 .map-container me-epd {
+  top: 50% !important;
+  transform: translateY(-50%) !important;
   opacity: 0.6 !important;
   transition: opacity 0.2s !important;
 }
 .map-container me-epd:hover {
   opacity: 1 !important;
+}
+/* 折叠按钮横向位置：各层级 me-parent 现已统一 padding(--node-gap-x) */
+.map-container .rhs me-epd {
+  right: calc(var(--node-gap-x) - 18px) !important;
+  left: auto !important;
+}
+.map-container .lhs me-epd {
+  left: calc(var(--node-gap-x) - 18px) !important;
+  right: auto !important;
 }
 
 /* 编辑框样式：让 Mind Elixir 自动复制原节点的 background/color，
@@ -1026,10 +1055,12 @@ export default {
    仅加 outline 作为编辑态视觉提示。 */
 .map-container #input-box {
   z-index: 1000 !important;
-  overflow: auto !important;
   box-sizing: border-box !important;
   outline: 2px solid #409eff !important;
   outline-offset: 1px !important;
+  /* 编辑框随输入内容自动变宽（width:max-content），达到设定的节点最大宽度后才换行 */
+  width: max-content !important;
+  max-width: var(--tms-node-max-width) !important;
 }
 
 /* 生成中节点样式：紫色蒙层闪动 */

@@ -22,7 +22,7 @@ public class MinioConfig {
      * 预签名 URL 对外暴露的路径前缀（配 nginx 反代）：非空则把 URL 改写为 https://<endpoint-host><prefix>/...，
      * 为空则返回原始预签名 URL。默认 /minio。
      */
-    private String publicPathPrefix = "/minio";
+    private String publicPathPrefix;
 
     // 注入客户端实例
     @Bean
