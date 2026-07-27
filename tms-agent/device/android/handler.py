@@ -19,7 +19,7 @@ import uiautomator2 as u2
 import xml.etree.ElementTree as ET
 
 from device.android.scrcpy import scrcpy_manager
-from device.android.tools.adb import get_adb_bin
+from device.android.tools.adb import get_adb_bin, restart_adb_server
 from device.android.apps import AndroidAppsHandler, AndroidAppUninstallHandler, AndroidAppInstallHandler
 from device.forward import ForwardHandler
 from utils.variables import settings
@@ -790,17 +790,18 @@ class AndroidProxyServer:
         self.app = self.make_app()
 
     @staticmethod
-    def _exec(args: list):
-        """执行一条 adb 命令（统一二进制，不用 shell）"""
+    def _exec(args: list, timeout: int = 20):
+        """执行一条 adb 命令（统一二进制，不用 shell），带 timeout。"""
         cmd = [get_adb_bin()] + args
-        return subprocess.run(cmd, capture_output=True).stdout.decode()
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=timeout).stdout.decode()
+        except subprocess.TimeoutExpired:
+            logger.warning(f"adb 命令超时: {' '.join(args)}")
+            return ""
 
     def init_env(self):
-        port = str(self.config["adb"]["port"])
-        self._exec(["kill-server"])
-        self._exec(["-P", port, "kill-server"])
-        # -a 让 server 监听所有网卡
-        self._exec(["-a", "-P", port, "start-server"])
+        # 清端口并起一个监听全网卡的 adb server
+        restart_adb_server(int(self.config["adb"]["port"]))
 
     def make_app(self):
         """创建Tornado应用 - WebSocket 投屏/控制/检查器 + HTTP 应用管理"""

@@ -14,6 +14,7 @@ from utils.server import ws_client
 from utils.variables import settings
 from device.android.tcp2usb import Tcp2Usb
 from device.android.scrcpy import scrcpy_manager
+from device.android.tools.adb import restart_adb_server, pin_adbutils_to_bundled, adb_server_alive
 from device.android.tools.install import AndroidDeviceInstaller
 from device.forward import PortForwardManager
 
@@ -48,6 +49,9 @@ class AndroidDeviceManager:
         os.environ["ADB_SERVER_HOST"] = self.host
         os.environ["ADB_SERVER_PORT"] = str(self.port)
 
+        # adbutils 客户端统一使用自带 adb
+        pin_adbutils_to_bundled()
+
         self.adb = adbutils.AdbClient(host=self.host, port=self.port)
         adbutils.adb = self.adb
 
@@ -56,6 +60,7 @@ class AndroidDeviceManager:
         self.ws: websocket.WebSocketClientConnection = None
         self._locks: Dict[str, asyncio.Lock] = {}  # 每设备串行化 start/stop_proxy
         self.forward_manager = PortForwardManager("android", self)  # 额外端口转发（内聚到本模块）
+        self._adb_down = 0  # adb server 连续探活失败次数
 
     def _lock_for(self, serial: str) -> asyncio.Lock:
         lock = self._locks.get(serial)
@@ -81,6 +86,17 @@ class AndroidDeviceManager:
                 await self._ensure_ws()
                 if not self.ws:
                     continue
+
+                # 探活：server 存活（哪怕繁忙）就列设备；只有连续多次连接被拒才判定真挂掉，
+                # 做一次受控重启，避免误杀繁忙 server，也避开 adbutils 的自动 start-server。
+                if not await asyncio.to_thread(adb_server_alive, self.port):
+                    self._adb_down += 1
+                    if self._adb_down >= 2:
+                        logger.warning("adb server 连续探活失败，执行受控重启")
+                        await asyncio.to_thread(restart_adb_server, self.port)
+                        self._adb_down = 0
+                    continue
+                self._adb_down = 0
 
                 # 以 adb 实时设备列表为准，仅取 state=="device" 的正常设备
                 try:

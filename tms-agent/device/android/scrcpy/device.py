@@ -12,7 +12,7 @@ from logzero import logger
 from tornado.websocket import WebSocketHandler
 
 from device.android.scrcpy.adb import AdbClient
-from device.android.tools.adb import get_adb_config, adb_cmd
+from device.android.tools.adb import get_adb_config, adb_cmd, pin_adbutils_to_bundled
 from device.android.tools.install import (
     AndroidToolDownloader,
     DOWNLOAD_DIR,
@@ -96,6 +96,8 @@ class ScrcpyDevice:
             adb_host = cfg["host"] if cfg["host"] != "0.0.0.0" else "127.0.0.1"
             adb_port = cfg["port"]
 
+            # adbutils 客户端统一使用自带 adb
+            pin_adbutils_to_bundled()
             adb_client = adbutils.AdbClient(host=adb_host, port=adb_port)
             device = adb_client.device(self.serial)
 

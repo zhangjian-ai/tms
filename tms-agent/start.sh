@@ -15,6 +15,10 @@ if pgrep -f "tunnel start" >/dev/null 2>&1; then
     sudo pkill -f "tunnel start" 2>/dev/null
 fi
 
+echo "[tms-agent] 清理主机上所有 adb server 进程..."
+# adb server 命令行形如 "adb -L tcp:PORT ... fork-server server"，按 fork-server 匹配可清掉任意端口/版本的 server
+pkill -f "adb.*fork-server" 2>/dev/null
+
 # 等待端口 / 进程释放
 sleep 2
 
