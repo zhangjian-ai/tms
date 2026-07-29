@@ -25,7 +25,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -75,7 +74,7 @@ public class CaseWorkflow {
     // ---- 生成主流程 ----
 
     /**
-     * 确认大纲后的用例生成主流程：预建分类目录 → 按章节并发生成 → 两级精修 → 清理空目录。
+     * 确认大纲后的用例生成主流程：预建章节目录骨架 → 按章节并发生成 → 两级精修 → 清理空目录。
      * 返回 {caseCount, failedChapters}。精修为尽力而为，其失败不影响已生成用例。
      */
     public int[] runGeneration(Integer taskId, String prdName, OutlineVO outline, String docText) {
@@ -83,11 +82,14 @@ public class CaseWorkflow {
         String truncatedDoc = docService.truncateDocText(docText);
         List<OutlineVO.Chapter> chapters = outline.getChapters();
 
-        // 预建分类目录（顶层，顺序固定）；章节模块在生成时按需挂到对应分类下。
-        // 结构：root → 分类(module,chapterId=null) → 章节(module,chapterId) → 用例(case)
+        // 预建章节目录骨架：章节名按中划线 "-" 拆成多级模块目录，前端据此渲染目录层级；
+        // 生成时把用例挂到对应章节的叶子模块下。结构：root → 模块(可多级) → 用例(case) → 步骤(step)
         XMindNode root = XMindTrees.newNode("root", docService.buildRootTitle(taskId, prdName), "root");
-        for (String cat : XMindTrees.CATEGORY_ORDER) {
-            root.getChildren().add(XMindTrees.newNode("module_" + UUID.randomUUID(), cat, "module"));
+        if (chapters != null) {
+            for (OutlineVO.Chapter c : chapters) {
+                if (c == null || c.getName() == null) continue;
+                XMindTrees.findOrCreateChapterPath(root, XMindTrees.tidyTitle(c.getName()), c.getId());
+            }
         }
         store.startGenerating(taskId, root);
         TestGenWebSocketHandler.sendTreeUpdated(wsKey, root);
@@ -121,7 +123,7 @@ public class CaseWorkflow {
         return new int[]{caseCount, failedChapters};
     }
 
-    /** 并发为大纲中每个章节生成用例，用例按 分类→章节 挂到对应目录下 */
+    /** 并发为大纲中每个章节生成用例，用例按章节目录路径挂到对应叶子模块下 */
     private void generateAllChapters(Integer taskId, List<OutlineVO.Chapter> chapters, String truncatedDoc) {
         if (chapters == null || chapters.isEmpty()) return;
         String wsKey = String.valueOf(taskId);
@@ -167,9 +169,9 @@ public class CaseWorkflow {
     }
 
     /**
-     * 为单个章节流式生成用例，按用例自带的 category 挂到 root→分类→章节 下。
-     * 每写入一条用例，推送其所在“分类目录”的最新子树（分类节点已预建，前端可增量更新）。
-     * 两次尝试仍为 0 条时，在默认分类下建带 failed 标记的章节占位节点，供右键单独重试。
+     * 为单个章节流式生成用例，按章节目录路径挂到 root→模块(可多级)→用例 下（叶子模块已在骨架预建）。
+     * 每写入一条用例，推送其所在“叶子模块”的最新子树（前端已知该模块节点，可增量更新）。
+     * 两次尝试仍为 0 条时，在对应叶子模块打 failed 标记，供右键单独重试。
      */
     private void streamChapter(Integer taskId, String chapterId, String chapterName,
                                String chapterScope, String caseSystem, String truncatedDoc) {
@@ -195,14 +197,14 @@ public class CaseWorkflow {
                         synchronized (lock) {
                             XMindNode root = store.getTree(taskId);
                             if (root == null) return;
-                            XMindNode categoryNode = XMindTrees.placeCaseByCategoryChapter(
-                                    root, chapterName, chapterId, jsonObj.getString("category"), caseNode);
+                            XMindNode leaf = XMindTrees.placeCaseByChapterPath(
+                                    root, chapterName, chapterId, caseNode);
                             store.saveTree(taskId, root);
                             caseCount[0]++;
                             addedThisAttempt.add(caseNode.getId());
-                            // 推送该分类目录最新子树（分类节点预建、前端已知，可增量替换）
-                            TestGenWebSocketHandler.sendNodeCasesGenerated(wsKey, categoryNode.getId(),
-                                    new ArrayList<>(categoryNode.getChildren()), false);
+                            // 推送该叶子模块最新子树（模块节点已预建、前端已知，可增量替换）
+                            TestGenWebSocketHandler.sendNodeCasesGenerated(wsKey, leaf.getId(),
+                                    new ArrayList<>(leaf.getChildren()), false);
                         }
                     } catch (Exception ex) {
                         log.warn("处理单个用例失败，跳过: {}", ex.toString());
@@ -228,17 +230,19 @@ public class CaseWorkflow {
             }
         }
 
-        // 整章失败（0 用例）：在默认分类下建 failed 章节占位节点，作为右键重试入口
+        // 整章失败（0 用例）：在对应叶子模块打 failed 标记，作为右键重试入口；
+        // 推送其父节点子树，让前端渲染出该模块的 failed 状态（NODE_CASES_GENERATED 仅替换子树）。
         if (lastErr != null) {
             synchronized (lock) {
                 XMindNode root = store.getTree(taskId);
                 if (root != null) {
-                    XMindNode categoryNode = XMindTrees.findOrCreateCategory(root, XMindTrees.DEFAULT_CATEGORY);
-                    XMindNode chapterNode = XMindTrees.findOrCreateChapter(categoryNode, chapterName, chapterId);
-                    chapterNode.setIcons(List.of("failed"));
+                    XMindNode leaf = XMindTrees.findOrCreateChapterPath(root, chapterName, chapterId);
+                    leaf.setIcons(List.of("failed"));
                     store.saveTree(taskId, root);
-                    TestGenWebSocketHandler.sendNodeCasesGenerated(wsKey, categoryNode.getId(),
-                            new ArrayList<>(categoryNode.getChildren()), false);
+                    XMindNode parent = XMindTrees.findParent(root, leaf.getId());
+                    if (parent == null) parent = root;
+                    TestGenWebSocketHandler.sendNodeCasesGenerated(wsKey, parent.getId(),
+                            new ArrayList<>(parent.getChildren()), false);
                 }
             }
             TestGenWebSocketHandler.sendProgress(wsKey, "章节[" + chapterName + "]生成失败：" + lastErr.getMessage());
@@ -262,43 +266,29 @@ public class CaseWorkflow {
         XMindNode target = XMindTrees.findNodeById(root, nodeId);
         if (target == null) { TestGenWebSocketHandler.sendError(wsKey, "目标节点不存在"); return; }
 
-        // 依据节点在树中的位置推断 分类(category) 与 章节(chapterName)：
-        // - 目标挂在 root 下 → 目标本身即分类目录（无具体章节）
-        // - 目标挂在某分类下 → 父级即分类，目标即章节目录
-        XMindNode parent = XMindTrees.findParent(root, nodeId);
-        String category = "";
-        String chapterName = "";
-        if (parent == null || "root".equals(parent.getType())) {
-            category = XMindTrees.tidyTitle(target.getTitle());
-        } else {
-            category = XMindTrees.tidyTitle(parent.getTitle());
-            chapterName = XMindTrees.tidyTitle(target.getTitle());
-        }
-
-        // 章节范围（scope）取自大纲，供提示词圈定生成范围
+        // 目标模块本身即目录，其标题作为“当前章节”名；章节范围（scope）从大纲按 chapterId/名匹配取得，
+        // 供提示词圈定生成范围（补充生成的用例直接追加到该目录下，见 streamInto）。
+        String chapterName = XMindTrees.tidyTitle(target.getTitle());
         String chapterScope = "";
-        if (!chapterName.isBlank()) {
-            OutlineVO outline = store.getOutline(taskId);
-            if (outline != null && outline.getChapters() != null) {
-                for (OutlineVO.Chapter c : outline.getChapters()) {
-                    boolean match = (target.getChapterId() != null && target.getChapterId().equals(c.getId()))
-                            || chapterName.equals(XMindTrees.tidyTitle(c.getName()));
-                    if (match) { chapterScope = c.getScope() == null ? "" : c.getScope(); break; }
-                }
+        OutlineVO outline = store.getOutline(taskId);
+        if (outline != null && outline.getChapters() != null) {
+            for (OutlineVO.Chapter c : outline.getChapters()) {
+                boolean match = (target.getChapterId() != null && target.getChapterId().equals(c.getId()))
+                        || chapterName.equals(XMindTrees.tidyTitle(c.getName()));
+                if (match) { chapterScope = c.getScope() == null ? "" : c.getScope(); break; }
             }
         }
 
-        // 目录补充生成用独立提示词：需求文档 + 当前分类/章节 + 用户补充测试内容，只生成当前分类类型的用例
+        // 目录补充生成用独立提示词：需求文档 + 当前章节 + 用户补充测试内容，直接追加到该目录下
         String caseSystem = testGenPromptService.getSystemPrompt("case_gen_manual_system");
         Map<String, String> p = new HashMap<>();
         p.put("extra", extraRequirement);
-        p.put("category", category);
         p.put("chapterName", chapterName);
         p.put("chapterScope", chapterScope);
 
         TestGenTaskPO task = taskMapper.selectById(taskId);
         String truncatedDoc = docService.truncateDocText(docService.fetchDocText(taskId, task.getPrdName()));
-        streamInto(taskId, nodeId, p, XMindTrees.tidyTitle(target.getTitle()),
+        streamInto(taskId, nodeId, p, chapterName,
                 caseSystem, "case_gen_manual_user", truncatedDoc);
     }
 
@@ -402,17 +392,17 @@ public class CaseWorkflow {
 
         TestGenWebSocketHandler.sendPhaseChanged(wsKey, "REFINING", "AI 正在精修用例（去重 · 合并 · 补漏）...");
         refineByChapter(taskId, wsKey, outline, truncatedDoc);
-        refineGlobal(taskId, wsKey, outline, truncatedDoc);
+        refineGlobal(taskId, wsKey, truncatedDoc);
     }
 
-    /** 章节内精修分组：同一章节的用例可能分布在多个分类目录下，按 chapterId（回退章节名）聚合 */
+    /** 章节内精修分组：一个“章节”对应带 chapterId 的叶子模块，聚合其下用例独立去重+合并+补漏 */
     private static final class ChapterGroup {
         String chapterId;
-        String name;
+        String name;   // 章节目录完整路径（多级用 "-" 连接），供补漏回挂
         final List<Map<String, Object>> cases = new ArrayList<>();
     }
 
-    /** 章节级：把同一章节（跨分类）的用例聚合后独立去重+合并+补漏（并行） */
+    /** 章节级：把每个章节（带 chapterId 的叶子模块）的用例聚合后独立去重+合并+补漏（并行） */
     private void refineByChapter(Integer taskId, String wsKey, OutlineVO outline, String doc) {
         XMindNode root = store.getTree(taskId);
         if (root == null || root.getChildren() == null) return;
@@ -428,22 +418,9 @@ public class CaseWorkflow {
             }
         }
 
-        // 遍历 root→分类→章节，按章节聚合用例（同章节跨分类合并到一组）
+        // 递归收集所有“章节叶子模块”（chapterId != null 的 module），按 chapterId 聚合其下用例
         LinkedHashMap<String, ChapterGroup> groups = new LinkedHashMap<>();
-        for (XMindNode categoryNode : root.getChildren()) {
-            if (!"module".equals(categoryNode.getType()) || categoryNode.getChapterId() != null) continue;
-            String category = XMindTrees.tidyTitle(categoryNode.getTitle());
-            if (categoryNode.getChildren() == null) continue;
-            for (XMindNode chapterNode : categoryNode.getChildren()) {
-                if (!"module".equals(chapterNode.getType())) continue;
-                String chapterName = XMindTrees.tidyTitle(chapterNode.getTitle());
-                String key = chapterNode.getChapterId() != null ? chapterNode.getChapterId() : "name:" + chapterName;
-                ChapterGroup g = groups.computeIfAbsent(key, k -> new ChapterGroup());
-                g.chapterId = chapterNode.getChapterId();
-                g.name = chapterName;
-                g.cases.addAll(collectChapterCasesFull(category, chapterNode));
-            }
-        }
+        collectChapterGroups(root, new ArrayList<>(), groups);
 
         List<ChapterGroup> ordered = new ArrayList<>();
         List<Map<String, String>> paramsList = new ArrayList<>();
@@ -489,17 +466,16 @@ public class CaseWorkflow {
         TestGenWebSocketHandler.sendProgress(wsKey, msg);
     }
 
-    /** 全局去重合并（需求 + 大纲 + 全量用例，只删不补，做跨章节最终收敛） */
-    private void refineGlobal(Integer taskId, String wsKey, OutlineVO outline, String doc) {
+    /** 全局去重（需求 + 全量用例，只删不补，做跨章节最终收敛）。用例整理为 Markdown 表格喂给模型，紧凑且友好 */
+    private void refineGlobal(Integer taskId, String wsKey, String doc) {
         XMindNode root = store.getTree(taskId);
         if (root == null) return;
-        List<Map<String, String>> cases = collectAllCaseViews(root);
+        List<Map<String, Object>> cases = collectAllCasesFull(root);
         if (cases.size() < 2) return;
 
-        TestGenWebSocketHandler.sendProgress(wsKey, "全局精修（跨章节去重合并），共 " + cases.size() + " 条用例...");
+        TestGenWebSocketHandler.sendProgress(wsKey, "全局精修（跨章节去重），共 " + cases.size() + " 条用例...");
         Map<String, String> params = new HashMap<>();
-        params.put("outline", outline == null ? "" : JSON.toJSONString(outline.getChapters()));
-        params.put("cases", JSON.toJSONString(cases));
+        params.put("cases", casesToMarkdownTable(cases));
         params.put("doc", doc);
 
         String system = testGenPromptService.getSystemPrompt("refine_global_system");
@@ -593,43 +569,109 @@ public class CaseWorkflow {
         }
     }
 
-    /** 收集全树用例视图 {id, category, module(章节名), 用例名称}，给全局精修使用（root→分类→章节→用例） */
-    private List<Map<String, String>> collectAllCaseViews(XMindNode root) {
-        List<Map<String, String>> list = new ArrayList<>();
-        if (root == null || root.getChildren() == null) return list;
-        for (XMindNode categoryNode : root.getChildren()) {
-            if (!"module".equals(categoryNode.getType()) || categoryNode.getChapterId() != null) continue;
-            String category = XMindTrees.tidyTitle(categoryNode.getTitle());
-            if (categoryNode.getChildren() == null) continue;
-            for (XMindNode chapterNode : categoryNode.getChildren()) {
-                if (!"module".equals(chapterNode.getType()) || chapterNode.getChildren() == null) continue;
-                String module = XMindTrees.tidyTitle(chapterNode.getTitle());
-                for (XMindNode caseNode : chapterNode.getChildren()) {
-                    if (!"case".equals(caseNode.getType())) continue;
-                    Map<String, String> m = new LinkedHashMap<>();
-                    m.put("id", caseNode.getId());
-                    m.put("category", category);
-                    m.put("module", module);
-                    m.put("用例名称", caseNode.getTitle());
-                    list.add(m);
-                }
+    /** 递归收集所有“章节叶子模块”（chapterId != null 的 module），带其从顶层模块起的完整目录路径 */
+    private void collectChapterGroups(XMindNode node, List<String> pathTitles,
+                                      LinkedHashMap<String, ChapterGroup> groups) {
+        if (node == null || node.getChildren() == null) return;
+        for (XMindNode child : node.getChildren()) {
+            if (!"module".equals(child.getType())) continue;
+            List<String> childPath = new ArrayList<>(pathTitles);
+            childPath.add(XMindTrees.tidyTitle(child.getTitle()));
+            if (child.getChapterId() != null) {
+                ChapterGroup g = groups.computeIfAbsent(child.getChapterId(), k -> new ChapterGroup());
+                g.chapterId = child.getChapterId();
+                g.name = String.join("-", childPath);
+                g.cases.addAll(collectChapterCasesFull(child));
+            }
+            // 用户可能在章节下再建子目录，继续深入
+            collectChapterGroups(child, childPath, groups);
+        }
+    }
+
+    /** 收集全树用例的完整结构化视图 {id, module(目录路径), 用例名称, 优先级, 前置条件, 测试步骤}，供全局精修精准去重（支持任意层级目录） */
+    private List<Map<String, Object>> collectAllCasesFull(XMindNode root) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        collectCasesFullRec(root, new ArrayList<>(), list);
+        return list;
+    }
+
+    private void collectCasesFullRec(XMindNode node, List<String> pathTitles, List<Map<String, Object>> out) {
+        if (node == null || node.getChildren() == null) return;
+        for (XMindNode child : node.getChildren()) {
+            String type = child.getType();
+            if ("case".equals(type)) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", child.getId());
+                m.put("module", String.join("-", pathTitles));
+                m.putAll(XMindTrees.caseNodeToJson(child));
+                out.add(m);
+            } else if ("module".equals(type)) {
+                List<String> childPath = new ArrayList<>(pathTitles);
+                childPath.add(XMindTrees.tidyTitle(child.getTitle()));
+                collectCasesFullRec(child, childPath, out);
             }
         }
-        return list;
+    }
+
+    /**
+     * 把用例列表整理成 Markdown 表格喂给模型：比 JSON 更紧凑（表头只出现一次、无大量引号/花括号），也更易读。
+     * 测试步骤压平为「序号.操作→预期」并用；分隔；单元格内的 | 与换行做转义，避免破坏表格结构。
+     */
+    private String casesToMarkdownTable(List<Map<String, Object>> cases) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("| 用例ID | 目录 | 用例名称 | 优先级 | 前置条件 | 测试步骤 |\n");
+        sb.append("| --- | --- | --- | --- | --- | --- |\n");
+        for (Map<String, Object> c : cases) {
+            sb.append("| ").append(cell(str(c.get("id"))))
+              .append(" | ").append(cell(str(c.get("module"))))
+              .append(" | ").append(cell(str(c.get("用例名称"))))
+              .append(" | ").append(cell(str(c.get("优先级"))))
+              .append(" | ").append(cell(str(c.get("前置条件"))))
+              .append(" | ").append(stepsInline(c.get("测试步骤")))
+              .append(" |\n");
+        }
+        return sb.toString();
+    }
+
+    /** 把测试步骤列表压平为单行「序号.操作→预期；...」 */
+    @SuppressWarnings("unchecked")
+    private String stepsInline(Object stepsObj) {
+        if (!(stepsObj instanceof List)) return "";
+        List<Map<String, String>> steps = (List<Map<String, String>>) stepsObj;
+        StringBuilder sb = new StringBuilder();
+        int i = 1;
+        for (Map<String, String> s : steps) {
+            if (s == null) continue;
+            String op = s.get("执行操作");
+            String ex = s.get("预期结果");
+            if (sb.length() > 0) sb.append("；");
+            sb.append(i++).append('.').append(cell(op == null ? "" : op));
+            if (ex != null && !ex.isBlank()) sb.append("→").append(cell(ex));
+        }
+        return sb.toString();
+    }
+
+    /** 单元格文本转义：| 换成 /，换行压成空格，避免破坏 Markdown 表格 */
+    private static String cell(String s) {
+        if (s == null || s.isEmpty()) return "";
+        return s.replace("|", "/").replace("\r", " ").replace("\n", " ").trim();
+    }
+
+    private static String str(Object o) {
+        return o == null ? "" : o.toString();
     }
 
     /**
      * 收集某章节模块下（用例为直接子节点）全部用例的完整结构化视图，供章节内精修做结构化合并：
-     * {id, category, 用例名称, 优先级, 前置条件, 测试步骤:[{执行操作,预期结果}]}
+     * {id, 用例名称, 优先级, 前置条件, 测试步骤:[{执行操作,预期结果}]}
      */
-    private List<Map<String, Object>> collectChapterCasesFull(String category, XMindNode chapterNode) {
+    private List<Map<String, Object>> collectChapterCasesFull(XMindNode chapterNode) {
         List<Map<String, Object>> list = new ArrayList<>();
         if (chapterNode == null || chapterNode.getChildren() == null) return list;
         for (XMindNode caseNode : chapterNode.getChildren()) {
             if (!"case".equals(caseNode.getType())) continue;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", caseNode.getId());
-            m.put("category", category);
             m.putAll(XMindTrees.caseNodeToJson(caseNode));
             list.add(m);
         }
@@ -664,8 +706,6 @@ public class CaseWorkflow {
                 keepNode.setTitle(rebuilt.getTitle());
                 keepNode.setIcons(rebuilt.getIcons());
                 keepNode.setChildren(rebuilt.getChildren());
-                // merged 可能带新的 category：把合并后的用例移动到更合适的分类目录（同章节下）
-                XMindTrees.moveCaseToCategory(root, keepNode, merged.getString("category"));
             }
             for (int j = 0; j < toRemove.size(); j++) {
                 String rid = toRemove.getString(j);
@@ -681,7 +721,7 @@ public class CaseWorkflow {
         return removed;
     }
 
-    /** 应用章节内补漏：additions 为完整用例（含 category），按 分类→章节 挂到对应目录下 */
+    /** 应用章节内补漏：additions 为完整用例，按章节目录路径挂到对应叶子模块下 */
     private int applyCaseAdditions(XMindNode root, String chapterName, String chapterId, JSONArray additions) {
         if (additions == null || additions.isEmpty() || root == null) return 0;
         int added = 0;
@@ -691,7 +731,7 @@ public class CaseWorkflow {
             if (name == null || name.isBlank()) continue;
             XMindNode caseNode = XMindTrees.buildSingleCaseNode(a);
             if (caseNode == null) continue;
-            XMindTrees.placeCaseByCategoryChapter(root, chapterName, chapterId, a.getString("category"), caseNode);
+            XMindTrees.placeCaseByChapterPath(root, chapterName, chapterId, caseNode);
             added++;
         }
         return added;

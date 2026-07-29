@@ -1,11 +1,8 @@
-## 当前分类
-{{category}}
-
 ## 当前章节
 {{chapterName}}
 {{chapterScope}}
 
-## 测试点
+## 补充测试内容
 {{extra}}
 
 ## 需求文档

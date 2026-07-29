@@ -475,7 +475,7 @@ export default {
       var parentType = findParentType(nodeObj.id)
 
       if (targetType === 'case') {
-        // 用例挂在分类目录（module）下
+        // 用例挂在目录（module）节点下（目录可多级）
         return parentType === 'module'
       } else if (targetType === 'module') {
         return parentType === 'module' || parentType === 'root'

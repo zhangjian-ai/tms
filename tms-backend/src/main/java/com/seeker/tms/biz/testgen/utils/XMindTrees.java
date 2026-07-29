@@ -14,18 +14,14 @@ import java.util.UUID;
 
 /**
  * XMind 树的无状态纯函数工具集：节点构建/查找/删除、类型统计、结构清理、导出过滤，
- * 以及 root → 分类(module) → 章节(module) → 用例(case) → 步骤(step) 的挂树逻辑。
+ * 以及 root → 模块(module，可多级) → 用例(case) → 步骤(step) 的挂树逻辑。
+ * 目录层级直接取自章节名：章节名用中划线 "-" 分隔即拆成多级模块目录。
  * 所有方法只操作传入的 {@link XMindNode}，不持有任何状态。
  */
 @Slf4j
 public final class XMindTrees {
 
     private XMindTrees() {}
-
-    /** 用例分类（顶层目录，顺序固定）。树层级：root → 分类(module) → 章节(module) → 用例(case) → 步骤(step) */
-    public static final List<String> CATEGORY_ORDER =
-            List.of("功能逻辑", "美术效果", "配置管理", "数据埋点", "异常场景");
-    public static final String DEFAULT_CATEGORY = "功能逻辑";
 
     public static XMindNode newNode(String id, String title, String type) {
         XMindNode n = new XMindNode();
@@ -85,7 +81,7 @@ public final class XMindTrees {
         return count;
     }
 
-    /** 统计带 failed 标记的章节模块数（章节挂在分类目录下，递归统计整棵树） */
+    /** 统计带 failed 标记的模块数（失败章节标记在其叶子模块上，递归统计整棵树） */
     public static int countFailedChapters(XMindNode node) {
         if (node == null) return 0;
         int count = 0;
@@ -239,7 +235,7 @@ public final class XMindTrees {
     }
 
     /**
-     * 过滤树用于 XMind 导出：树已是 根 → 分类 → 章节 → 用例 → 步骤，只需剔除 free 自由节点。
+     * 过滤树用于 XMind 导出：树已是 根 → 模块(可多级) → 用例 → 步骤，只需剔除 free 自由节点。
      */
     public static XMindNode filterForExport(XMindNode node) {
         if ("free".equals(node.getType())) {
@@ -268,60 +264,75 @@ public final class XMindTrees {
     }
 
     /**
-     * 自动生成/补漏用例的挂树：root → 分类(module) → 章节(module) → 用例(case)。
-     * 分类节点已预建（按 title 匹配、chapterId=null），章节节点按 chapterId 找/建。返回用例所在分类节点。
+     * 把章节名按中划线 "-" 拆成多级模块路径（逐段 tidy、丢弃空段）。
+     * 无有效分段时回退为整条 tidy 后的名称，仍为空则用「未命名」兜底。
      */
-    public static XMindNode placeCaseByCategoryChapter(XMindNode root, String chapterName, String chapterId,
-                                                       String category, XMindNode caseNode) {
-        String cat = (category == null || category.isBlank()) ? DEFAULT_CATEGORY : tidyTitle(category);
-        XMindNode categoryNode = findOrCreateCategory(root, cat);
-        XMindNode chapterNode = findOrCreateChapter(categoryNode, chapterName, chapterId);
-        chapterNode.getChildren().add(caseNode);
-        return categoryNode;
-    }
-
-    /** 在 root 下按标题找分类目录（chapterId=null 的直接子模块），没有则新建 */
-    public static XMindNode findOrCreateCategory(XMindNode root, String cat) {
-        if (root.getChildren() == null) root.setChildren(new ArrayList<>());
-        for (XMindNode c : root.getChildren()) {
-            if ("module".equals(c.getType()) && c.getChapterId() == null && cat.equals(c.getTitle())) {
-                return c;
+    public static List<String> splitChapterPath(String chapterName) {
+        List<String> segments = new ArrayList<>();
+        if (chapterName != null) {
+            for (String seg : chapterName.split("-")) {
+                String s = tidyTitle(seg);
+                if (!s.isEmpty()) segments.add(s);
             }
         }
-        XMindNode n = newNode("module_" + UUID.randomUUID(), cat, "module");
-        root.getChildren().add(n);
-        return n;
-    }
-
-    /** 在分类目录下按 chapterId（回退章节名）找章节模块，没有则新建（带 chapterId） */
-    public static XMindNode findOrCreateChapter(XMindNode categoryNode, String chapterName, String chapterId) {
-        if (categoryNode.getChildren() == null) categoryNode.setChildren(new ArrayList<>());
-        for (XMindNode c : categoryNode.getChildren()) {
-            if (!"module".equals(c.getType())) continue;
-            boolean match = (chapterId != null && chapterId.equals(c.getChapterId()))
-                    || (chapterId == null && chapterName != null && chapterName.equals(c.getTitle()));
-            if (match) return c;
+        if (segments.isEmpty()) {
+            String whole = tidyTitle(chapterName);
+            segments.add(whole.isEmpty() ? "未命名" : whole);
         }
-        XMindNode n = newNode("module_" + UUID.randomUUID(), chapterName, "module");
-        n.setChapterId(chapterId);
-        categoryNode.getChildren().add(n);
-        return n;
+        return segments;
     }
 
     /**
-     * 把用例移动到目标分类目录（保持所属章节不变）：root → 目标分类 → 同章节 → 用例。
-     * 仅在树为 分类→章节→用例 结构、且目标分类与当前分类不同时移动；否则原地不动。
+     * 按章节路径（"-" 分隔的多级目录）在 root 下找/建嵌套模块，返回最末（叶子）模块。
+     * 中间目录按标题匹配复用（作为容器，不看 chapterId）；
+     * 叶子模块按「标题 + chapterId」精确匹配，彻底区分同名同路径但 chapterId 不同的章节——
+     * 找不到精确匹配时，采纳同名且尚未标记 chapterId 的既有目录并补标，否则新建叶子。
      */
-    public static void moveCaseToCategory(XMindNode root, XMindNode caseNode, String newCategory) {
-        if (root == null || caseNode == null || newCategory == null || newCategory.isBlank()) return;
-        String target = tidyTitle(newCategory);
-        XMindNode chapterNode = findParent(root, caseNode.getId());        // 用例所在章节节点
-        if (chapterNode == null) return;
-        XMindNode categoryNode = findParent(root, chapterNode.getId());    // 章节所在分类节点
-        if (categoryNode == null || "root".equals(categoryNode.getType())) return; // 非标准结构，跳过
-        if (target.equals(tidyTitle(categoryNode.getTitle()))) return;     // 分类未变化
-        // 从当前章节摘除，按 目标分类 → 同章节（chapterId/名一致）重新挂
-        if (chapterNode.getChildren() != null) chapterNode.getChildren().remove(caseNode);
-        placeCaseByCategoryChapter(root, tidyTitle(chapterNode.getTitle()), chapterNode.getChapterId(), target, caseNode);
+    public static XMindNode findOrCreateChapterPath(XMindNode root, String chapterName, String chapterId) {
+        if (root.getChildren() == null) root.setChildren(new ArrayList<>());
+        List<String> segments = splitChapterPath(chapterName);
+        XMindNode parent = root;
+        for (int i = 0; i < segments.size(); i++) {
+            String seg = segments.get(i);
+            boolean isLeaf = i == segments.size() - 1;
+            if (parent.getChildren() == null) parent.setChildren(new ArrayList<>());
+            XMindNode found = null;
+            if (isLeaf && chapterId != null) {
+                // 叶子：优先「标题 + chapterId」精确匹配；否则采纳同名且无 chapterId 的目录并补标
+                XMindNode adoptable = null;
+                for (XMindNode c : parent.getChildren()) {
+                    if (!"module".equals(c.getType()) || !seg.equals(c.getTitle())) continue;
+                    if (chapterId.equals(c.getChapterId())) { found = c; break; }
+                    if (c.getChapterId() == null && adoptable == null) adoptable = c;
+                }
+                if (found == null && adoptable != null) {
+                    found = adoptable;
+                    found.setChapterId(chapterId);
+                }
+            } else {
+                // 中间目录（或无 chapterId 的兜底）：按标题匹配复用
+                for (XMindNode c : parent.getChildren()) {
+                    if ("module".equals(c.getType()) && seg.equals(c.getTitle())) { found = c; break; }
+                }
+            }
+            if (found == null) {
+                found = newNode("module_" + UUID.randomUUID(), seg, "module");
+                if (isLeaf && chapterId != null) found.setChapterId(chapterId);
+                parent.getChildren().add(found);
+            }
+            parent = found;
+        }
+        return parent;
+    }
+
+    /**
+     * 生成/补漏用例的挂树：按章节路径找/建叶子模块，把用例挂到叶子模块下，返回叶子模块（供增量推送）。
+     */
+    public static XMindNode placeCaseByChapterPath(XMindNode root, String chapterName,
+                                                   String chapterId, XMindNode caseNode) {
+        XMindNode leaf = findOrCreateChapterPath(root, chapterName, chapterId);
+        if (leaf.getChildren() == null) leaf.setChildren(new ArrayList<>());
+        leaf.getChildren().add(caseNode);
+        return leaf;
     }
 }

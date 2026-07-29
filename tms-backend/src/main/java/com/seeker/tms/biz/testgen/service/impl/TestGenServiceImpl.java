@@ -310,14 +310,16 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         // 不清理已解析文本缓存：重新生成的文档与解析开关均不可变（无编辑入口），
         // 全量需求文档不会变，直接复用 testgen_{taskId}.parsed.txt，省去重复下载/解析/整合。
 
-        TestGenTaskPO task = new TestGenTaskPO();
-        task.setId(taskId);
-        task.setStatus(TaskStatus.NEW.getCode());
-        task.setMessage(null);
-        task.setXmindFileName(null);
-        task.setExcelFileName(null);
-        task.setUpdateTime(LocalDateTime.now());
-        taskMapper.updateById(task);
+        // 用 lambdaUpdate 显式 set(null)：MyBatis-Plus 默认 NOT_NULL 更新策略下
+        // updateById 会忽略为 null 的字段，导致 xmind/excel 文件名残留、任务仍显示为有可下载结果。
+        this.lambdaUpdate()
+                .eq(TestGenTaskPO::getId, taskId)
+                .set(TestGenTaskPO::getStatus, TaskStatus.NEW.getCode())
+                .set(TestGenTaskPO::getMessage, null)
+                .set(TestGenTaskPO::getXmindFileName, null)
+                .set(TestGenTaskPO::getExcelFileName, null)
+                .set(TestGenTaskPO::getUpdateTime, LocalDateTime.now())
+                .update();
         // 不调用 closeAllSessions：发起 regenerate 的用户 ws 仍需用于接收新一轮推送
     }
 
