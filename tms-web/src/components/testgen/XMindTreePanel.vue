@@ -40,6 +40,7 @@ export default {
     const readonlyOnly = computed(() => /只读/.test(props.disabledTip || ''))
     let mind = null
     let isInternalUpdate = false
+    let internalUpdateToken = 0
     // 会话级折叠状态：用户点"折叠用例"后置 true，下次 initMind / toME 时把所有 case 节点渲染为折叠
     // 不写入 store/Redis，纯本地 UI 行为
     let collapseAllCasesFlag = false
@@ -56,6 +57,38 @@ export default {
       if (!mind || !nodeId) return null
       try {
         return mind.findEle(nodeId)
+      } catch (e) {
+        return null
+      }
+    }
+
+    // 删除后应选中的目标 id：以最后一个待删节点为基准，先向前再向后找未被同批删除的兄弟，都没有才回退父节点
+    function pickSelectionAfterRemove(nodes) {
+      try {
+        var list = Array.isArray(nodes) ? nodes : (nodes ? [nodes] : [])
+        if (list.length === 0) return null
+        var base = list[list.length - 1]
+        var nodeObj = base && base.nodeObj
+        var parent = nodeObj && nodeObj.parent
+        if (!parent || !parent.children) return null
+
+        var removingIds = {}
+        list.forEach(function(el) {
+          if (el && el.nodeObj) removingIds[el.nodeObj.id] = true
+        })
+
+        var sibs = parent.children
+        var idx = sibs.indexOf(nodeObj)
+        var pick = null
+        for (var i = idx - 1; i >= 0; i--) {
+          if (sibs[i] && !removingIds[sibs[i].id]) { pick = sibs[i]; break }
+        }
+        if (!pick) {
+          for (var j = idx + 1; j < sibs.length; j++) {
+            if (sibs[j] && !removingIds[sibs[j].id]) { pick = sibs[j]; break }
+          }
+        }
+        return pick ? pick.id : parent.id
       } catch (e) {
         return null
       }
@@ -159,49 +192,6 @@ export default {
       if (overlay) overlay.click()
     }
 
-    /**
-     * 把指定节点居中到画布。优先使用 toCenterByEle（mind-elixir 高版本 API），
-     * 回退到操纵 me-tpc 元素的 scrollIntoView，最次回退到 toCenter。
-     */
-    function centerOnNode(nodeId) {
-      if (!mind || !nodeId) return
-      try {
-        if (typeof mind.toCenterByEle === 'function') {
-          var ele = mind.findEle(nodeId)
-          if (ele) {
-            mind.toCenterByEle(ele)
-            return
-          }
-        }
-        // 回退方案：直接定位 DOM
-        var dom = container.value && container.value.querySelector(
-                'me-tpc[data-nodeid="me' + nodeId + '"]')
-        if (dom && dom.scrollIntoView) {
-          dom.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' })
-          return
-        }
-      } catch (e) {
-        // 忽略，回退到 toCenter
-      }
-      if (mind.toCenter) mind.toCenter()
-    }
-
-    /**
-     * 找到当前树里"最末新增"的用例节点居中，没有则整棵树居中。
-     */
-    function centerOnLatestNode() {
-      if (!mind || !mind.nodeData) return
-      var latestCase = null
-      function walk(node) {
-        if (!node) return
-        if (node.nodeType === 'case') latestCase = node
-        if (node.children) node.children.forEach(walk)
-      }
-      walk(mind.nodeData)
-      if (latestCase) centerOnNode(latestCase.id)
-      else if (mind.toCenter) mind.toCenter()
-    }
-
     function initMind() {
       if (!props.treeData || !container.value) return
 
@@ -213,6 +203,8 @@ export default {
       if (mind) {
         mind.refresh(data)
         scheduleRenderBadges()
+        // 刷新画布：把根节点居中（refresh 不会自动居中）
+        if (!props.disabled && mind.toCenter) mind.toCenter()
         return
       }
 
@@ -284,12 +276,44 @@ export default {
 
       mind.init(data)
 
-      scheduleRenderBadges()
-
-      // 生成中（disabled=true）：每次重建后把视图定位到最近新增的节点，避免被推出可视范围
-      if (props.disabled) {
-        setTimeout(function() { centerOnLatestNode() }, 0)
+      // 删除后优先选中兄弟节点，无兄弟才回退到父节点；期间禁用 scrollIntoView，避免画布跳动
+      var originalRemoveNodes = mind.removeNodes.bind(mind)
+      mind.removeNodes = function(nodes) {
+        var targetId = pickSelectionAfterRemove(nodes || mind.currentNodes)
+        var savedScroll = mind.scrollIntoView
+        mind.scrollIntoView = function() {}
+        try {
+          originalRemoveNodes(nodes)
+          if (targetId) {
+            var el = safeFindEle(targetId)
+            if (el) mind.selectNode(el)
+          }
+        } finally {
+          mind.scrollIntoView = savedScroll
+        }
       }
+
+      // 撤销/重做走 refresh 重绘、不触发 operation，需手动补齐徽章、加载态与写回
+      if (typeof mind.undo === 'function') {
+        var originalUndo = mind.undo.bind(mind)
+        mind.undo = function() {
+          originalUndo()
+          scheduleRenderBadges()
+          setTimeout(syncLoadingStates, 50)
+          emitUpdate()
+        }
+      }
+      if (typeof mind.redo === 'function') {
+        var originalRedo = mind.redo.bind(mind)
+        mind.redo = function() {
+          originalRedo()
+          scheduleRenderBadges()
+          setTimeout(syncLoadingStates, 50)
+          emitUpdate()
+        }
+      }
+
+      scheduleRenderBadges()
 
       // 拦截正在生成用例的节点的右键菜单
       container.value.addEventListener('contextmenu', function(e) {
@@ -566,10 +590,7 @@ export default {
     }
 
     // ---- 优先级编辑器 ----
-
-    // 在浏览器完成布局/绘制后再插入徽章。mind-elixir 的 init/refresh/layout 会重建节点 DOM，
-    // 紧跟其后的 setTimeout(0) 可能早于绘制完成，safeFindEle 对尚未落到 DOM 的节点返回 null，
-    // 导致只有部分用例渲染出优先级徽章。用双 rAF 等到绘制后执行，并以令牌去重，仅保留最后一次调度。
+    // 在浏览器完成布局/绘制后再插入徽章
     function scheduleRenderBadges() {
       var token = ++badgeRenderToken
       requestAnimationFrame(function() {
@@ -804,8 +825,6 @@ export default {
       mind.linkDiv()
       // layout 会清空 nodes 容器并重建 DOM，徽章 wrapper 会丢失，需重新渲染
       scheduleRenderBadges()
-      // 居中回到根节点附近，避免历次平移残留导致的偏移
-      if (mind.toCenter) mind.toCenter()
     }
 
     function zoomIn() { if (mind) mind.scale(mind.scaleVal + 0.1) }
@@ -813,12 +832,16 @@ export default {
     function fitView() { if (mind) mind.toCenter() }
 
     function emitUpdate() {
+      var myToken = ++internalUpdateToken
       isInternalUpdate = true
       setTimeout(function() {
         if (!mind) return
         var updated = fromME(mind.nodeData)
         if (updated) emit('update', updated)
-        setTimeout(function() { isInternalUpdate = false }, 200)
+        setTimeout(function() {
+          // 仅当没有更晚的 emitUpdate 覆盖时才解除屏蔽
+          if (myToken === internalUpdateToken) isInternalUpdate = false
+        }, 200)
       }, 100)
     }
 
@@ -840,37 +863,14 @@ export default {
         syncLoadingStates()
       }, 50)
 
-      // 生成期间：把最新子树里最后一条用例居中，无用例时回退到该节点
-      if (props.disabled) {
-        setTimeout(function() {
-          var lastCase = findLastCase(nodeData)
-          centerOnNode(lastCase ? lastCase.id : nodeId)
-        }, 60)
-      }
-
       // 注意：流式中间态不调 emitUpdate 写回 store，避免 isInternalUpdate 屏蔽
       // 后续接收的 TREE_UPDATED 整树推送会作为权威更新触发 watch + 重建
-    }
-
-    /** 在节点子树中找最后一个 case（mind-elixir nodeObj 结构，用 nodeType 字段） */
-    function findLastCase(node) {
-      var last = null
-      function walk(n) {
-        if (!n) return
-        if (n.nodeType === 'case') last = n
-        if (n.children) n.children.forEach(walk)
-      }
-      walk(node)
-      return last
     }
 
     // ---- 生命周期 ----
 
     /**
-     * 强制销毁并重建 mind-elixir 实例。
-     * 用例生成阶段会高频调用 updateNodeChildren（直接改 nodeData + 局部 layout），mind-elixir 内部
-     * 的 DOM↔nodeObj 映射、selection、disposable 等会逐步累积漂移；之后用户一缩放/再操作就可能把
-     * 画布推出可视区或画成空白。生成结束这一刻销毁重建相当于"重进页面"，把状态清干净。
+     * 强制销毁并重建 mind-elixir 实例
      */
     function rebuild() {
       if (!props.treeData || !container.value) return
@@ -917,7 +917,7 @@ export default {
     return {
       container, readonlyOnly,
       expandAll, collapseAll, collapseAllCases, zoomIn, zoomOut, fitView,
-      updateNodeChildren, centerOnNode, rebuild
+      updateNodeChildren, rebuild
     }
   }
 }
