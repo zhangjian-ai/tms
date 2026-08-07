@@ -23,7 +23,7 @@
 import { ref, watch, onMounted, nextTick, computed } from 'vue'
 import MindElixir from 'mind-elixir'
 import { Loading } from '@element-plus/icons-vue'
-import { NODE_COLORS, PRIORITY_CONFIG, generateMainBranch, generateSubBranch } from './xmindTheme'
+import { NODE_COLORS, PLAIN_NODE_TYPES, PLAIN_TEXT_COLOR, PRIORITY_CONFIG, generateMainBranch, generateSubBranch } from './xmindTheme'
 
 export default {
   name: 'XMindTreePanel',
@@ -133,7 +133,11 @@ export default {
       if (!node) return null
       var failed = Array.isArray(node.icons) && node.icons.indexOf('failed') >= 0
       var typeColor = NODE_COLORS[node.type] || NODE_COLORS.step
-      var baseStyle = { background: typeColor, color: '#fff' }
+      // 无填充类型（步骤）：透明底 + 深色字，只靠连线着色；其余类型上底色 + 反白字
+      var plain = PLAIN_NODE_TYPES.indexOf(node.type) >= 0
+      var baseStyle = plain
+        ? { background: 'transparent', color: PLAIN_TEXT_COLOR }
+        : { background: typeColor, color: '#fff' }
       if (failed) {
         baseStyle.border = '2px solid #f56c6c'
       }
@@ -363,6 +367,8 @@ export default {
       // 折叠/展开会重建节点 DOM，注入的徽章随之丢失，需重新渲染
       mind.bus.addListener('expandNode', function() {
         scheduleRenderBadges()
+        // 单节点折叠/展开也写回，持久化折叠状态（只读/生成中不写回）
+        persistFoldState()
       })
 
       // 监听右键菜单显示，动态控制菜单项可见性和顺序
@@ -543,10 +549,14 @@ export default {
     function setChildrenType(nodeObj, newType) {
       if (!nodeObj || !nodeObj.children) return
       var bg = NODE_COLORS[newType] || NODE_COLORS.step
+      var plain = PLAIN_NODE_TYPES.indexOf(newType) >= 0
       for (var i = 0; i < nodeObj.children.length; i++) {
         var child = nodeObj.children[i]
         child.nodeType = newType
-        child.style = { background: bg, color: '#fff' }
+        // 无填充类型（步骤）：透明底 + 深色字；连线仍取该类型色
+        child.style = plain
+          ? { background: 'transparent', color: PLAIN_TEXT_COLOR }
+          : { background: bg, color: '#fff' }
         child.branchColor = bg
 
         // 设为用例时，自动添加 P2 优先级（如果没有优先级）
@@ -562,8 +572,8 @@ export default {
         // 节点可能被折叠，DOM 不存在时只同步数据
         var tpcEl = safeFindEle(child.id)
         if (tpcEl) {
-          tpcEl.style.background = bg
-          tpcEl.style.color = '#fff'
+          tpcEl.style.background = plain ? 'transparent' : bg
+          tpcEl.style.color = plain ? PLAIN_TEXT_COLOR : '#fff'
         }
         setChildrenType(child, newType)
       }
@@ -794,6 +804,7 @@ export default {
       if (rootTpc) mind.expandNodeAll(rootTpc, true)
       // expandNodeAll 不触发 expandNode 事件，需手动补徽章
       scheduleRenderBadges()
+      persistFoldState()
     }
 
     function collapseAll() {
@@ -801,20 +812,27 @@ export default {
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, false)
       scheduleRenderBadges()
+      persistFoldState()
     }
 
     /**
      * 一键折叠所有用例：把 nodeType === 'case' 的节点折起来（隐藏前置条件/步骤等子节点），
      * 模块和用例节点保持当前展开状态。
      *
-     * 实现说明：直接改 mind.nodeData 上 case 节点的 expanded=false，再调 mind.layout() 重排。
-     * 不用 mind.expandNode(el, false) 逐个折叠 —— mind-elixir 5.11 的 expandNode 在折叠后
-     * 会做 this.move(dx, dy) 来"保持节点视觉位置不动"，循环调用会累积平移把整张图推出可视区域，
-     * 表现为"折叠后面板全空"。
+     * 实现说明：改 mind.nodeData 上 case 节点的 expanded=false 后重排。折叠使整树尺寸骤减，
+     * 而画布 map 的 transform（平移量）不会自动跟着变——layout()/linkDiv() 都不改 transform，
+     * 只有 init 才 toCenter——于是重排后整棵树相对视口发生位移、被 overflow:hidden 裁掉，
+     * 表现为"折叠后用例树整个消失"。
+     *
+     * 修复：仿照库内 expandNodeAll(xn) 的做法，重排前后记录 root 的屏幕坐标，用差值 move() 补偿，
+     * 把 root 锚回原来的屏幕位置（collapse 全部/expandNodeAll 正是靠这个才不跑飞）。
+     * 不逐个 expandNode(el,false)：那样每次都会 move 一次、循环累积把图推飞。
      */
     function collapseAllCases() {
       if (!mind || !mind.nodeData) return
       collapseAllCasesFlag = true
+      var rootBefore = safeFindEle(mind.nodeData.id)
+      var before = rootBefore ? rootBefore.getBoundingClientRect() : null
       function walk(node) {
         if (!node) return
         if (node.nodeType === 'case') node.expanded = false
@@ -823,8 +841,13 @@ export default {
       walk(mind.nodeData)
       mind.layout()
       mind.linkDiv()
+      // 位移补偿：把 root 拉回折叠前的屏幕位置，避免整树移出可视区
+      var rootAfter = safeFindEle(mind.nodeData.id)
+      var after = rootAfter ? rootAfter.getBoundingClientRect() : null
+      if (before && after) mind.move(before.left - after.left, before.top - after.top)
       // layout 会清空 nodes 容器并重建 DOM，徽章 wrapper 会丢失，需重新渲染
       scheduleRenderBadges()
+      persistFoldState()
     }
 
     function zoomIn() { if (mind) mind.scale(mind.scaleVal + 0.1) }
@@ -843,6 +866,13 @@ export default {
           if (myToken === internalUpdateToken) isInternalUpdate = false
         }, 200)
       }, 100)
+    }
+
+    // 折叠/展开状态写回（复用 emitUpdate 的全量写回 + 防抖保存链路）。
+    // 只读/生成中不写回：避免只读态触发"只读"提示、以及生成期间与流式推送打架。
+    function persistFoldState() {
+      if (props.disabled) return
+      emitUpdate()
     }
 
     // 增量更新指定节点的子树（不触发全量渲染）。children 为后端推送的该节点最新子树

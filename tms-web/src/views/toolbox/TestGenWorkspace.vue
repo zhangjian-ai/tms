@@ -457,6 +457,19 @@ export default {
       }
     }
 
+    // 递归收集自由节点标题（自由节点导出时会被过滤，完成前需提醒用户处理）
+    function collectFreeNodeTitles(node, acc) {
+      if (!node) return acc
+      if (node.type === 'free') acc.push(node.title || '(未命名节点)')
+      if (node.children) node.children.forEach(function(c) { collectFreeNodeTitles(c, acc) })
+      return acc
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    }
+
     async function handleFinish() {
       if (readonly.value) {
         ElMessage.warning('当前为只读模式，无法完成任务')
@@ -464,6 +477,19 @@ export default {
       }
       if (generatingNodeIds.value.size > 0) {
         ElMessage.warning('还有目录正在生成用例，请等待完成后再操作')
+        return
+      }
+      // 完成前校验：自由节点不会导出到 XMind/Excel，拦住避免用户遗忘丢失手动新增内容
+      var freeTitles = collectFreeNodeTitles(store.treeData, [])
+      if (freeTitles.length > 0) {
+        var shown = freeTitles.slice(0, 3).map(function(t) { return '• ' + escapeHtml(t) }).join('<br/>')
+        var more = freeTitles.length > 3 ? '<br/>…… 共 ' + freeTitles.length + ' 个' : ''
+        await ElMessageBox.alert(
+          '面板中还有 <b>' + freeTitles.length + '</b> 个自由节点（灰色）未处理：<br/>' + shown + more +
+          '<br/><br/>自由节点不会导出到 XMind / Excel。请先将它们右键「设为目录 / 设为用例」或删除后再完成，以免手动新增的内容丢失。',
+          '存在未处理的自由节点',
+          { dangerouslyUseHTMLString: true, confirmButtonText: '去处理' }
+        ).catch(function() {})
         return
       }
       try {

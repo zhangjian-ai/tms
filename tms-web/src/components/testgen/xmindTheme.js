@@ -8,13 +8,20 @@
 
 // ---- 节点类型配色 ----
 // key 为节点 type；value 同时用作节点背景色和连线颜色（branchColor）。
+// 冷色系青蓝渐变：root→目录→用例→步骤 由深到浅、相邻层为邻近色，无互补撞色。
 export const NODE_COLORS = {
-  root: '#2c3e50',
-  module: '#3498db',
-  case: '#8e44ad',
-  step: '#e67e22',
-  free: '#7d7f81'
+  root: '#2c3e50',    // 深蓝灰
+  module: '#2980b9',  // 蓝
+  case: '#16a085',    // 青绿 teal
+  step: '#48c9b0',    // 浅青（仅用于连线；步骤节点本身无填充，见下）
+  free: '#606266'     // 深灰
 }
+
+// ---- 无填充节点类型 ----
+// 这些类型的节点不上底色（透明背景 + 深色字），只保留连线着色。
+// 步骤是叶子、数量最多，去底色减轻视觉负担、让带色的目录/用例节点作为结构骨架更突出。
+export const PLAIN_NODE_TYPES = ['step']
+export const PLAIN_TEXT_COLOR = '#2c3e50' // 深色字，落在浅色画布上可读性优于反白
 
 // ---- 优先级徽章配色 ----
 export const PRIORITY_CONFIG = {
