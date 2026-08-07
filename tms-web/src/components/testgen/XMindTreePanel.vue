@@ -129,6 +129,14 @@ export default {
 
     // ---- 数据转换 ----
 
+    // 按类型返回节点尺寸样式（会并入 nodeObj.style，mind-elixir 逐键应用为内联样式）。
+    // 目录(module)介于根节点(CSS 控制)与普通节点之间，突出目录层级；命中任意深度的目录。
+    // 其它类型返回空对象=用默认尺寸。
+    function sizeStyleForType(type) {
+      if (type === 'module') return { fontSize: '16px', fontWeight: '550', padding: '5px 10px' }
+      return {}
+    }
+
     function toME(node, isRoot) {
       if (!node) return null
       var failed = Array.isArray(node.icons) && node.icons.indexOf('failed') >= 0
@@ -138,6 +146,7 @@ export default {
       var baseStyle = plain
         ? { background: 'transparent', color: PLAIN_TEXT_COLOR }
         : { background: typeColor, color: '#fff' }
+      Object.assign(baseStyle, sizeStyleForType(node.type))
       if (failed) {
         baseStyle.border = '2px solid #f56c6c'
       }
@@ -523,6 +532,7 @@ export default {
       var bg = NODE_COLORS[newType] || NODE_COLORS.step
       nodeData.nodeType = newType
       nodeData.style = { background: bg, color: '#fff' }
+      Object.assign(nodeData.style, sizeStyleForType(newType))
       nodeData.branchColor = bg
 
       // 设为用例时，自动添加 P2 优先级（如果没有优先级）
@@ -539,6 +549,11 @@ export default {
       if (tpcEl) {
         tpcEl.style.background = bg
         tpcEl.style.color = '#fff'
+        // 同步目录尺寸（切到目录立即放大；切走则清空，回落到默认尺寸）
+        var sz = sizeStyleForType(newType)
+        tpcEl.style.fontSize = sz.fontSize || ''
+        tpcEl.style.fontWeight = sz.fontWeight || ''
+        tpcEl.style.padding = sz.padding || ''
       }
 
       renderPriorityBadges()
@@ -557,6 +572,7 @@ export default {
         child.style = plain
           ? { background: 'transparent', color: PLAIN_TEXT_COLOR }
           : { background: bg, color: '#fff' }
+        Object.assign(child.style, sizeStyleForType(newType))
         child.branchColor = bg
 
         // 设为用例时，自动添加 P2 优先级（如果没有优先级）
@@ -574,6 +590,10 @@ export default {
         if (tpcEl) {
           tpcEl.style.background = plain ? 'transparent' : bg
           tpcEl.style.color = plain ? PLAIN_TEXT_COLOR : '#fff'
+          var csz = sizeStyleForType(newType)
+          tpcEl.style.fontSize = csz.fontSize || ''
+          tpcEl.style.fontWeight = csz.fontWeight || ''
+          tpcEl.style.padding = csz.padding || ''
         }
         setChildrenType(child, newType)
       }
@@ -796,6 +816,20 @@ export default {
 
     // ---- 工具栏 ----
 
+    // 折叠/展开重排后的可见性兜底：若根节点已滚出可视区（重排前用户正看着树的深处、
+    // 根节点本就在视口外，锚定又把它锚回那个屏外旧位置），则 toCenter 拉回，避免面板空白。
+    // 根节点仍在视口内时不动，保留用户当前视角、不跳动。
+    function ensureRootVisible() {
+      if (!mind || !mind.nodeData || !container.value) return
+      var el = safeFindEle(mind.nodeData.id)
+      if (!el) return
+      var r = el.getBoundingClientRect()
+      var h = container.value.getBoundingClientRect()
+      var outside = r.right < h.left + 20 || r.left > h.right - 20 ||
+                    r.bottom < h.top + 20 || r.top > h.bottom - 20
+      if (outside && mind.toCenter) mind.toCenter()
+    }
+
     function expandAll() {
       if (!mind) return
       // 清掉折叠 flag，让后续 initMind / toME 不再强制折叠 case
@@ -804,6 +838,7 @@ export default {
       if (rootTpc) mind.expandNodeAll(rootTpc, true)
       // expandNodeAll 不触发 expandNode 事件，需手动补徽章
       scheduleRenderBadges()
+      ensureRootVisible()
       persistFoldState()
     }
 
@@ -812,6 +847,8 @@ export default {
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, false)
       scheduleRenderBadges()
+      // 折叠全部塌成仅剩根节点，若折叠前根节点在视口外会整屏空白，兜底拉回
+      ensureRootVisible()
       persistFoldState()
     }
 
@@ -847,6 +884,8 @@ export default {
       if (before && after) mind.move(before.left - after.left, before.top - after.top)
       // layout 会清空 nodes 容器并重建 DOM，徽章 wrapper 会丢失，需重新渲染
       scheduleRenderBadges()
+      // 锚定后再兜底：根节点若仍在视口外则拉回，避免空白
+      ensureRootVisible()
       persistFoldState()
     }
 
@@ -1006,17 +1045,28 @@ export default {
 /* 节点最大宽度：显示与编辑态统一取此值（短节点编辑时也放大到这个宽度） */
 .map-container {
   --tms-node-max-width: 20em;
+  --tms-plain-text: #2c3e50; /* 步骤等透明底节点的文字色（浅色主题：深字，对比更好） */
 }
-.map-container me-root me-tpc {
-  font-size: 16px !important;
-  font-weight: 600 !important;
+/* mind-elixir 会跟随 OS prefers-color-scheme 自动切深色画布（--bgcolor 变黑），
+   这里用同一信号把透明底节点的文字翻成浅色，避免黑底黑字。 */
+@media (prefers-color-scheme: dark) {
+  .map-container {
+    --tms-plain-text: #dcdfe6;
+  }
 }
-/* root 与一级节点统一为长方形，与用例目录节点（me-parent me-tpc）一致 */
+/* root 与一级节点统一为长方形，与用例目录节点（me-parent me-tpc）一致。
+   注意：不在此设 padding —— 根节点由下方专属规则控制，目录节点由内联 sizeStyleForType 控制，
+   若在此加 padding !important 会压过目录节点的内联内边距。 */
 .map-container me-root me-tpc,
 .map-container me-main > me-wrapper > me-parent > me-tpc {
   border: none !important;
   border-radius: 3px !important;
-  padding: var(--topic-padding) !important;
+}
+/* 根节点更突出 */
+.map-container me-root me-tpc {
+  font-size: 20px !important;
+  font-weight: 650 !important;
+  padding: 10px 20px !important;
 }
 /* ---- 统一各层级父子横向间距 ---- */
 .map-container me-main > me-wrapper > me-parent {
