@@ -115,8 +115,16 @@ public final class CaseExcelBuilder {
                     stepSb.append('\n');
                     expSb.append('\n');
                 }
-                stepSb.append(numbered(s.get("执行操作"), i + 1));
-                expSb.append(numbered(s.get("预期结果"), i + 1));
+                String action = s.get("执行操作");
+                String result = s.get("预期结果");
+                if (result.contains("预期结果")){
+                    stepSb.append(action);
+                    expSb.append(result);
+                }
+                else {
+                    stepSb.append(numbered(action, i + 1));
+                    expSb.append(numbered(result, i + 1));
+                }
             }
         }
 

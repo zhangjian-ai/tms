@@ -210,8 +210,11 @@ public final class XMindTrees {
         if (caseNode.getChildren() != null) {
             for (XMindNode child : caseNode.getChildren()) {
                 String t = child.getTitle() == null ? "" : child.getTitle();
-                if (t.startsWith("前置条件:")) {
-                    pre = t.substring("前置条件:".length()).replaceFirst("^\\n", "").trim();
+                // 一般前置条件后面会有一个冒号
+                if (t.startsWith("前置条件：") || t.startsWith("前置条件:")) {
+                    pre = t.substring("前置条件".length() + 1).replaceFirst("^\\n", "").trim();
+                } else if (t.startsWith("前置条件")) {
+                    pre = t.substring("前置条件".length()).replaceFirst("^\\n", "").trim();
                 } else {
                     Map<String, String> step = new LinkedHashMap<>();
                     step.put("执行操作", t);
