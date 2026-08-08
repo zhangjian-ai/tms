@@ -262,6 +262,16 @@ export default {
               }
             },
             {
+              name: '设为步骤',
+              onclick: function() {
+                var selectedNode = mind.currentNode
+                if (selectedNode && canSetType(selectedNode.nodeObj, 'step')) {
+                  setNodeType(selectedNode.nodeObj.id, 'step')
+                }
+                closeContextMenu()
+              }
+            },
+            {
               name: '设为自由节点',
               onclick: function() {
                 var selectedNode = mind.currentNode
@@ -477,16 +487,11 @@ export default {
             }
           }, 10)
         } else if (operation && (operation.name === 'addChild' || operation.name === 'addSibling' || operation.name === 'addParent')) {
-          // 新创建的节点，设置为自由节点样式
           if (operation.obj) {
-            operation.obj.nodeType = 'free'
-            operation.obj.style = { background: NODE_COLORS.free, color: '#fff' }
-            operation.obj.branchColor = NODE_COLORS.free
-            var tpcEl = safeFindEle(operation.obj.id)
-            if (tpcEl) {
-              tpcEl.style.background = NODE_COLORS.free
-              tpcEl.style.color = '#fff'
-            }
+            // 父节点为用例/步骤时，新增子/兄弟节点默认设为步骤，其余为自由节点（addParent 除外）
+            var pType = operation.obj.parent && operation.obj.parent.nodeType
+            var stepChild = operation.name !== 'addParent' && (pType === 'case' || pType === 'step')
+            applyNodeStyle(operation.obj, stepChild ? 'step' : 'free')
           }
           // 新增节点会触发父节点重新布局，徽章 wrapper 可能丢失，需重新渲染
           scheduleRenderBadges()
@@ -505,6 +510,20 @@ export default {
 
     // ---- 节点类型设置 ----
 
+    // 给新增节点套用类型样式（数据 + DOM），plain 类型走透明底
+    function applyNodeStyle(obj, type) {
+      var plain = PLAIN_NODE_TYPES.indexOf(type) >= 0
+      var bg = NODE_COLORS[type]
+      obj.nodeType = type
+      obj.style = plain ? { background: 'transparent', color: PLAIN_TEXT_COLOR } : { background: bg, color: '#fff' }
+      obj.branchColor = bg
+      var el = safeFindEle(obj.id)
+      if (el) {
+        el.style.background = plain ? 'transparent' : bg
+        el.style.color = plain ? PLAIN_TEXT_COLOR : '#fff'
+      }
+    }
+
     function canSetType(nodeObj, targetType) {
       if (!nodeObj || nodeObj.root) return false
 
@@ -518,6 +537,9 @@ export default {
         return parentType === 'module'
       } else if (targetType === 'module') {
         return parentType === 'module' || parentType === 'root'
+      } else if (targetType === 'step') {
+        // 步骤挂在用例或步骤节点下
+        return parentType === 'case' || parentType === 'step'
       }
 
       return false
@@ -530,8 +552,9 @@ export default {
       if (!nodeData) return
 
       var bg = NODE_COLORS[newType] || NODE_COLORS.step
+      var plain = PLAIN_NODE_TYPES.indexOf(newType) >= 0
       nodeData.nodeType = newType
-      nodeData.style = { background: bg, color: '#fff' }
+      nodeData.style = plain ? { background: 'transparent', color: PLAIN_TEXT_COLOR } : { background: bg, color: '#fff' }
       Object.assign(nodeData.style, sizeStyleForType(newType))
       nodeData.branchColor = bg
 
@@ -540,15 +563,15 @@ export default {
         nodeData.priority = 'priority-3'
       }
 
-      // 设为自由节点时，移除优先级
-      if (newType === 'free') {
+      // 自由节点/步骤节点没有优先级
+      if (newType === 'free' || newType === 'step') {
         nodeData.priority = null
       }
 
       var tpcEl = safeFindEle(nodeId)
       if (tpcEl) {
-        tpcEl.style.background = bg
-        tpcEl.style.color = '#fff'
+        tpcEl.style.background = plain ? 'transparent' : bg
+        tpcEl.style.color = plain ? PLAIN_TEXT_COLOR : '#fff'
         // 同步目录尺寸（切到目录立即放大；切走则清空，回落到默认尺寸）
         var sz = sizeStyleForType(newType)
         tpcEl.style.fontSize = sz.fontSize || ''
@@ -601,7 +624,7 @@ export default {
 
     function canResetToFree(nodeObj) {
       if (!nodeObj || nodeObj.root) return false
-      return nodeObj.nodeType !== 'free' && nodeObj.nodeType !== 'step'
+      return nodeObj.nodeType !== 'free'
     }
 
     function findParentType(nodeId) {

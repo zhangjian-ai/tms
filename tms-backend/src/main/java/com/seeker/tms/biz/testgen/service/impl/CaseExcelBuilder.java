@@ -115,9 +115,10 @@ public final class CaseExcelBuilder {
                     stepSb.append('\n');
                     expSb.append('\n');
                 }
+                // 兼容处理用户直接把所有操作及结果写到一个节点内
                 String action = s.get("执行操作");
                 String result = s.get("预期结果");
-                if (result.contains("预期结果")){
+                if (steps.size() == 1 && result.contains("预期结果")){
                     stepSb.append(action);
                     expSb.append(result);
                 }
