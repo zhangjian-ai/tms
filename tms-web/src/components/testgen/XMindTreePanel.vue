@@ -267,6 +267,9 @@ export default {
                 var selectedNode = mind.currentNode
                 if (selectedNode && canSetType(selectedNode.nodeObj, 'step')) {
                   setNodeType(selectedNode.nodeObj.id, 'step')
+                  // 同步：子树里的自由后代节点一并转为步骤
+                  convertFreeDescendantsToStep(selectedNode.nodeObj)
+                  renderPriorityBadges()
                 }
                 closeContextMenu()
               }
@@ -409,7 +412,7 @@ export default {
           var nodeObj = selectedNode ? selectedNode.nodeObj : null
 
           // 自定义菜单项名称列表（按期望顺序）
-          var customMenus = ['生成用例', '设为目录', '设为用例', '设为自由节点']
+          var customMenus = ['生成用例', '设为目录', '设为用例', '设为步骤', '设为自由节点']
           var customItems = []
           var nativeItems = []
 
@@ -450,6 +453,9 @@ export default {
               li.style.display = (nodeObj && canSetType(nodeObj, 'module')) ? '' : 'none'
             } else if (text === '设为用例') {
               li.style.display = (nodeObj && canSetType(nodeObj, 'case')) ? '' : 'none'
+            } else if (text === '设为步骤') {
+              // 仅"自由节点 且 父节点为用例/步骤"（即用例/步骤下的一级子节点）可设为步骤
+              li.style.display = (nodeObj && canSetType(nodeObj, 'step')) ? '' : 'none'
             } else if (text === '设为自由节点') {
               li.style.display = (nodeObj && canResetToFree(nodeObj)) ? '' : 'none'
             }
@@ -521,6 +527,17 @@ export default {
       if (el) {
         el.style.background = plain ? 'transparent' : bg
         el.style.color = plain ? PLAIN_TEXT_COLOR : '#fff'
+      }
+    }
+
+    // 递归把子树里所有【自由】后代转为步骤（设为步骤时同步子树中的自由节点，
+    // 已是步骤/其它类型的节点保持不变，但仍继续向下遍历以覆盖更深层的自由节点）
+    function convertFreeDescendantsToStep(nodeObj) {
+      if (!nodeObj || !nodeObj.children) return
+      for (var i = 0; i < nodeObj.children.length; i++) {
+        var child = nodeObj.children[i]
+        if (child.nodeType === 'free') applyNodeStyle(child, 'step')
+        convertFreeDescendantsToStep(child)
       }
     }
 
