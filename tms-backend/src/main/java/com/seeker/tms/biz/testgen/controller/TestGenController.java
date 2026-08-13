@@ -2,7 +2,10 @@ package com.seeker.tms.biz.testgen.controller;
 
 import com.seeker.tms.biz.testgen.entities.*;
 import com.seeker.tms.biz.testgen.service.TestGenService;
+import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
+import com.seeker.tms.common.auth.UserContext;
 import com.seeker.tms.common.entities.PageResult;
+import com.seeker.tms.common.enums.ResultStatus;
 import com.seeker.tms.common.utils.MinioUtil;
 import com.seeker.tms.common.utils.Result;
 import io.swagger.annotations.Api;
@@ -53,6 +56,13 @@ public class TestGenController {
     @ApiOperation("保存 XMind 数据")
     @RequestMapping(value = "/task/{taskId}/xmind", method = {RequestMethod.PUT, RequestMethod.POST})
     public Result<?> saveXMindData(@PathVariable Integer taskId, @RequestBody XMindNode root) {
+        // 任务被他人占用（编辑锁）时拒绝保存
+        String username = UserContext.get();
+        if (!TestGenWebSocketHandler.canEdit(String.valueOf(taskId), username)) {
+            log.warn("拒绝保存 XMind：任务 {} 正被他人占用，请求者={}", taskId, username);
+            return Result.builder(ResultStatus.FAILED.getCode(),
+                    "任务正被他人编辑，您当前为只读模式，保存被拒绝", null);
+        }
         testGenService.saveXMindData(taskId, root);
         return Result.success();
     }

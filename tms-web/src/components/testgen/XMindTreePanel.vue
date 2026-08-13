@@ -7,7 +7,7 @@
       <el-button size="small" @click="zoomIn">放大</el-button>
       <el-button size="small" @click="zoomOut">缩小</el-button>
       <el-button size="small" @click="fitView">适应画布</el-button>
-      <span v-if="disabled && disabledTip" class="disabled-tip">
+      <span v-if="(disabled || readonly) && disabledTip" class="disabled-tip">
         <el-icon class="is-loading" v-if="!readonlyOnly"><Loading /></el-icon>
         {{ disabledTip }}
       </span>
@@ -31,7 +31,10 @@ export default {
   props: {
     treeData: { type: Object, default: null },
     generatingNodeIds: { type: Object, default: () => new Set() },
+    // 硬锁（生成/规划中）：全遮罩，禁止一切交互
     disabled: { type: Boolean, default: false },
+    // 只读（任务被他人占用）：可平移/缩放/折叠查看，但禁止编辑，且绝不向后端写回
+    readonly: { type: Boolean, default: false },
     disabledTip: { type: String, default: '' }
   },
   emits: ['update', 'generate-cases'],
@@ -129,9 +132,7 @@ export default {
 
     // ---- 数据转换 ----
 
-    // 按类型返回节点尺寸样式（会并入 nodeObj.style，mind-elixir 逐键应用为内联样式）。
-    // 目录(module)介于根节点(CSS 控制)与普通节点之间，突出目录层级；命中任意深度的目录。
-    // 其它类型返回空对象=用默认尺寸。
+    // 按类型返回节点尺寸样式，并入 nodeObj.style（mind-elixir 逐键应用为内联样式）；非 module 用默认尺寸
     function sizeStyleForType(type) {
       if (type === 'module') return { fontSize: '16px', fontWeight: '550', padding: '5px 10px' }
       return {}
@@ -214,6 +215,8 @@ export default {
       var data = { nodeData: nodeData, arrows: [], summaries: [], direction: MindElixir.RIGHT }
 
       if (mind) {
+        // refresh 不重置 editable，这里显式同步，避免只读态在整树刷新后被放开
+        mind.editable = !(props.disabled || props.readonly)
         mind.refresh(data)
         scheduleRenderBadges()
         // 刷新画布：把根节点居中（refresh 不会自动居中）
@@ -225,7 +228,8 @@ export default {
         el: container.value,
         direction: MindElixir.RIGHT,
         draggable: true,
-        editable: true,
+        // 硬锁或只读时不可编辑（editable=false 仍允许平移/缩放/折叠，屏蔽增删改/拖拽/右键/键盘）
+        editable: !(props.disabled || props.readonly),
         contextMenu: {
           focus: true,
           link: true,
@@ -301,6 +305,16 @@ export default {
       })
 
       mind.init(data)
+
+      // 只读/生成中的编辑硬兜底：无论何种触发方式（双击 / F2 / 节点菜单），
+      // 都不进入编辑态。不依赖 mind.editable 标志的时序，杜绝只读态下改动内容。
+      if (typeof mind.beginEdit === 'function') {
+        var originalBeginEdit = mind.beginEdit.bind(mind)
+        mind.beginEdit = function() {
+          if (props.disabled || props.readonly) return
+          return originalBeginEdit.apply(mind, arguments)
+        }
+      }
 
       // 删除后优先选中兄弟节点，无兄弟才回退到父节点；期间禁用 scrollIntoView，避免画布跳动
       var originalRemoveNodes = mind.removeNodes.bind(mind)
@@ -530,8 +544,7 @@ export default {
       }
     }
 
-    // 递归把子树里所有【自由】后代转为步骤（设为步骤时同步子树中的自由节点，
-    // 已是步骤/其它类型的节点保持不变，但仍继续向下遍历以覆盖更深层的自由节点）
+    // 递归把子树里所有自由后代转为步骤（非自由节点保持不变，继续向下遍历）
     function convertFreeDescendantsToStep(nodeObj) {
       if (!nodeObj || !nodeObj.children) return
       for (var i = 0; i < nodeObj.children.length; i++) {
@@ -856,9 +869,7 @@ export default {
 
     // ---- 工具栏 ----
 
-    // 折叠/展开重排后的可见性兜底：若根节点已滚出可视区（重排前用户正看着树的深处、
-    // 根节点本就在视口外，锚定又把它锚回那个屏外旧位置），则 toCenter 拉回，避免面板空白。
-    // 根节点仍在视口内时不动，保留用户当前视角、不跳动。
+    // 重排后可见性兜底：根节点滚出可视区时 toCenter 拉回，在视口内则不动
     function ensureRootVisible() {
       if (!mind || !mind.nodeData || !container.value) return
       var el = safeFindEle(mind.nodeData.id)
@@ -887,24 +898,12 @@ export default {
       var rootTpc = container.value.querySelector('me-root me-tpc')
       if (rootTpc) mind.expandNodeAll(rootTpc, false)
       scheduleRenderBadges()
-      // 折叠全部塌成仅剩根节点，若折叠前根节点在视口外会整屏空白，兜底拉回
       ensureRootVisible()
       persistFoldState()
     }
 
-    /**
-     * 一键折叠所有用例：把 nodeType === 'case' 的节点折起来（隐藏前置条件/步骤等子节点），
-     * 模块和用例节点保持当前展开状态。
-     *
-     * 实现说明：改 mind.nodeData 上 case 节点的 expanded=false 后重排。折叠使整树尺寸骤减，
-     * 而画布 map 的 transform（平移量）不会自动跟着变——layout()/linkDiv() 都不改 transform，
-     * 只有 init 才 toCenter——于是重排后整棵树相对视口发生位移、被 overflow:hidden 裁掉，
-     * 表现为"折叠后用例树整个消失"。
-     *
-     * 修复：仿照库内 expandNodeAll(xn) 的做法，重排前后记录 root 的屏幕坐标，用差值 move() 补偿，
-     * 把 root 锚回原来的屏幕位置（collapse 全部/expandNodeAll 正是靠这个才不跑飞）。
-     * 不逐个 expandNode(el,false)：那样每次都会 move 一次、循环累积把图推飞。
-     */
+    // 折叠所有用例(case)节点：改 expanded=false 后重排，位移补偿保持根节点视觉位置。
+    // 会话级 flag 使后续 initMind / toME 继续按折叠渲染 case。
     function collapseAllCases() {
       if (!mind || !mind.nodeData) return
       collapseAllCasesFlag = true
@@ -918,13 +917,11 @@ export default {
       walk(mind.nodeData)
       mind.layout()
       mind.linkDiv()
-      // 位移补偿：把 root 拉回折叠前的屏幕位置，避免整树移出可视区
+      // 位移补偿：锚定根节点
       var rootAfter = safeFindEle(mind.nodeData.id)
       var after = rootAfter ? rootAfter.getBoundingClientRect() : null
       if (before && after) mind.move(before.left - after.left, before.top - after.top)
-      // layout 会清空 nodes 容器并重建 DOM，徽章 wrapper 会丢失，需重新渲染
       scheduleRenderBadges()
-      // 锚定后再兜底：根节点若仍在视口外则拉回，避免空白
       ensureRootVisible()
       persistFoldState()
     }
@@ -947,10 +944,9 @@ export default {
       }, 100)
     }
 
-    // 折叠/展开状态写回（复用 emitUpdate 的全量写回 + 防抖保存链路）。
-    // 只读/生成中不写回：避免只读态触发"只读"提示、以及生成期间与流式推送打架。
+    // 折叠/展开状态写回；只读/生成中不写回
     function persistFoldState() {
-      if (props.disabled) return
+      if (props.disabled || props.readonly) return
       emitUpdate()
     }
 
@@ -1019,6 +1015,11 @@ export default {
       }
     })
 
+    // 锁态翻转（生成进度 / 对方释放编辑锁）时同步 mind-elixir 可编辑性
+    watch(function() { return props.disabled || props.readonly }, function(locked) {
+      if (mind) mind.editable = !locked
+    })
+
     onMounted(function() {
       nextTick(initMind)
     })
@@ -1085,18 +1086,15 @@ export default {
 /* 节点最大宽度：显示与编辑态统一取此值（短节点编辑时也放大到这个宽度） */
 .map-container {
   --tms-node-max-width: 20em;
-  --tms-plain-text: #2c3e50; /* 步骤等透明底节点的文字色（浅色主题：深字，对比更好） */
+  --tms-plain-text: #2c3e50; /* 步骤等透明底节点文字色（浅色主题） */
 }
-/* mind-elixir 会跟随 OS prefers-color-scheme 自动切深色画布（--bgcolor 变黑），
-   这里用同一信号把透明底节点的文字翻成浅色，避免黑底黑字。 */
+/* 深色主题下透明底节点文字翻浅，与 mind-elixir 的 prefers-color-scheme 主题切换一致 */
 @media (prefers-color-scheme: dark) {
   .map-container {
     --tms-plain-text: #dcdfe6;
   }
 }
-/* root 与一级节点统一为长方形，与用例目录节点（me-parent me-tpc）一致。
-   注意：不在此设 padding —— 根节点由下方专属规则控制，目录节点由内联 sizeStyleForType 控制，
-   若在此加 padding !important 会压过目录节点的内联内边距。 */
+/* root 与一级节点：无边框长方形。padding 不在此设：root 用下方专属规则，module 用内联 sizeStyleForType */
 .map-container me-root me-tpc,
 .map-container me-main > me-wrapper > me-parent > me-tpc {
   border: none !important;

@@ -37,6 +37,7 @@
         :tree-data="store.treeData"
         :generating-node-ids="generatingNodeIds"
         :disabled="treeDisabled"
+        :readonly="readonly"
         :disabled-tip="disabledTip"
         @update="handleTreeUpdate"
         @generate-cases="handleGenerateForNode"
@@ -110,9 +111,8 @@ export default {
       return !readonly.value && store.task?.status === 'PLAN_REVIEW' && !!outline.value
     })
 
-    // 生成阶段（PLANNING/GENERATING）禁止编辑树；只读用户也禁；其他场景允许
+    // 硬锁：PLANNING/GENERATING 期间全遮罩禁止交互；只读态单独经 readonly 传给面板
     const treeDisabled = computed(() => {
-      if (readonly.value) return true
       const s = store.task?.status
       return s === 'PLANNING' || s === 'GENERATING'
     })
@@ -145,6 +145,10 @@ export default {
           if (res.data.outline) {
             outline.value = res.data.outline
           }
+          // 任务正被他人编辑：打开即进入只读态并提示（不依赖 WS 推送）
+          if (res.data.occupiedBy) {
+            notifyOccupied(res.data.occupiedBy)
+          }
         }
       } catch (e) {
         ElMessage.error('恢复工作区失败')
@@ -166,6 +170,11 @@ export default {
     }
 
     function connectWs() {
+      // 已知只读（restore 判定为他人占用）：不再建连，后端也会立即 close 只读连接，连了徒增抖动
+      if (readonly.value) {
+        store.wsConnected = false
+        return
+      }
       if (!needsWs()) {
         store.wsConnected = false
         return
@@ -276,6 +285,21 @@ export default {
       }, 3000)
     }
 
+    // 进入只读态并提示占用者（restore 与 WS OCCUPIED 两条路径复用；弹窗仅提示一次）
+    let occupiedNotified = false
+    function notifyOccupied(occupier) {
+      readonly.value = true
+      stopHeartbeat()
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      if (occupiedNotified) return
+      occupiedNotified = true
+      ElMessageBox.alert(
+        `该任务正在被 ${occupier || '其他用户'} 编辑，您当前为只读模式，无法触发生成或修改。`,
+        '任务被占用',
+        { confirmButtonText: '我知道了', type: 'warning' }
+      ).catch(() => {})
+    }
+
     function handleWsMessage(msg) {
       switch (msg.type) {
         case 'CONNECTED':
@@ -285,15 +309,7 @@ export default {
           }
           break
         case 'OCCUPIED': {
-          readonly.value = true
-          stopHeartbeat()
-          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-          const occupier = msg.data?.occupiedBy || '其他用户'
-          ElMessageBox.alert(
-            `该任务正在被 ${occupier} 编辑，您当前为只读模式，无法触发生成或修改。`,
-            '任务被占用',
-            { confirmButtonText: '我知道了', type: 'warning' }
-          ).catch(() => {})
+          notifyOccupied(msg.data?.occupiedBy)
           break
         }
         case 'HEARTBEAT_ACK':
@@ -511,6 +527,8 @@ export default {
     }
 
     function onBeforeUnload() {
+      // 只读用户离开页面不回写
+      if (readonly.value) return
       if (store.treeData) {
         const blob = new Blob([JSON.stringify(store.treeData)], { type: 'application/json' })
         navigator.sendBeacon(`${config.baseURL}${config.apiPrefix}/testgen/task/${taskId}/xmind`, blob)

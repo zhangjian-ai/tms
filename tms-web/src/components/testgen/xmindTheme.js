@@ -18,12 +18,9 @@ export const NODE_COLORS = {
 }
 
 // ---- 无填充节点类型 ----
-// 这些类型的节点不上底色（透明背景 + 深色字），只保留连线着色。
-// 步骤是叶子、数量最多，去底色减轻视觉负担、让带色的目录/用例节点作为结构骨架更突出。
+// 这些类型的节点透明背景 + 深色字，只保留连线着色（步骤为叶子，去底色让带色的目录/用例更突出）。
 export const PLAIN_NODE_TYPES = ['step']
-// 透明底节点的文字色。引用 CSS 变量 --tms-plain-text（在 XMindTreePanel 里按
-// prefers-color-scheme 定义：浅色主题深字、深色主题浅字），兜底用 mind-elixir 自身的
-// 主题文字色 --color。避免 OS 深色模式下（mind-elixir 会自动切深色画布）出现黑底黑字。
+// 透明底节点文字色：引用 CSS 变量 --tms-plain-text（按 prefers-color-scheme 定义），兜底 mind-elixir 的 --color
 export const PLAIN_TEXT_COLOR = 'var(--tms-plain-text, var(--color))'
 
 // ---- 优先级徽章配色 ----

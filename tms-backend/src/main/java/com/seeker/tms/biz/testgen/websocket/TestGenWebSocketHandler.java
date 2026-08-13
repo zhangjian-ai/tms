@@ -146,6 +146,22 @@ public class TestGenWebSocketHandler extends TextWebSocketHandler {
         return idx >= 0 ? path.substring(idx + 1) : null;
     }
 
+    /**
+     * 判断某用户当前能否编辑（保存）指定任务：无占用者或占用者即本人 -> 可编辑；被他人占用 -> 拒绝。
+     */
+    public static boolean canEdit(String taskId, String username) {
+        if (taskId == null) return false;
+        TaskOwner owner = taskOwners.get(taskId);
+        return owner == null || (username != null && username.equals(owner.getUsername()));
+    }
+
+    /** 返回任务当前占用者用户名；无人占用返回 null。用于任务打开(restore)时可靠判定只读态。 */
+    public static String getOccupant(String taskId) {
+        if (taskId == null) return null;
+        TaskOwner owner = taskOwners.get(taskId);
+        return owner == null ? null : owner.getUsername();
+    }
+
     // ---------- 静态广播 API（保持原签名兼容）----------
 
     public static void sendMessage(String taskId, String type, Object data) {

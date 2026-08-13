@@ -12,6 +12,7 @@ import com.seeker.tms.biz.testgen.service.DocumentParserService;
 import com.seeker.tms.biz.testgen.service.TestGenService;
 import com.seeker.tms.biz.testgen.utils.XMindTrees;
 import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
+import com.seeker.tms.common.auth.UserContext;
 import com.seeker.tms.common.docsource.DocumentLinkService;
 import com.seeker.tms.common.entities.PageResult;
 import com.seeker.tms.common.utils.MinioUtil;
@@ -346,6 +347,13 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         vo.setTreeData(store.getTree(taskId));
         vo.setGeneratingNodeIds(store.generatingNodeIds(taskId));
         vo.setOutline(outline);
+        // 占用判定：任务正被他人持有编辑锁(存在活跃 WS)时标记只读，前端据此可靠进入只读态，
+        // 不依赖 WS OCCUPIED 推送(发送后立即 close 存在丢帧/重连风险)
+        String current = UserContext.get();
+        String occupant = TestGenWebSocketHandler.getOccupant(String.valueOf(taskId));
+        if (occupant != null && !occupant.equals(current)) {
+            vo.setOccupiedBy(occupant);
+        }
         return vo;
     }
 
