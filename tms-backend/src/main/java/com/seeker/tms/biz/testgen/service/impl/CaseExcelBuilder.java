@@ -17,9 +17,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 把用例树导出为 Excel（.xlsx）。列：
- * 用例目录 | 用例名称 | 需求ID | 前置条件 | 用例步骤 | 预期结果 | 用例类型 | 用例状态 | 用例等级 | 创建人。
- * 用例目录 = 从根节点到用例所属最末目录节点的标题，用「-」连接。
+ * 把用例树导出为 Excel（.xlsx）。列（共 7 列）：
+ * 用例名称 | 用例分级 | 用例类型 | 前置条件 | 测试步骤 | 预期结果 | 所属目录。
+ * 所属目录 = 从根节点到用例所属最末目录节点的标题，用「|」连接。
+ * 多步骤用例按「一步一行」展开：首行携带名称/分级/类型/前置条件/所属目录，
+ * 后续步骤行仅填 测试步骤 与 预期结果，其余列留空。
  */
 @Slf4j
 public final class CaseExcelBuilder {
@@ -27,12 +29,14 @@ public final class CaseExcelBuilder {
     private CaseExcelBuilder() {}
 
     private static final String[] HEADERS = {
-            "用例目录", "用例名称", "需求ID", "前置条件", "用例步骤", "预期结果", "用例类型", "用例状态", "用例等级", "创建人"
+            "用例名称", "用例分级", "用例类型", "前置条件", "测试步骤", "预期结果", "所属目录"
     };
     // 各列宽度（字符数）
-    private static final int[] COLUMN_WIDTHS = {32, 30, 12, 40, 50, 50, 10, 10, 10, 12};
+    private static final int[] COLUMN_WIDTHS = {34, 10, 12, 30, 46, 46, 40};
+    // 目录层级连接符
+    private static final String DIR_SEPARATOR = "|";
 
-    public static byte[] build(XMindNode root, String creator) {
+    public static byte[] build(XMindNode root) {
         try (XSSFWorkbook wb = new XSSFWorkbook();
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = wb.createSheet("测试用例");
@@ -57,7 +61,7 @@ public final class CaseExcelBuilder {
             }
 
             List<String[]> rows = new ArrayList<>();
-            collectRows(root, new ArrayList<>(), rows, creator == null ? "" : creator);
+            collectRows(root, new ArrayList<>(), rows);
 
             int r = 1;
             for (String[] row : rows) {
@@ -78,12 +82,12 @@ public final class CaseExcelBuilder {
         }
     }
 
-    /** 深度优先遍历：累积目录路径（root + 各级 module 标题），遇到用例即产出一行；跳过 free 自由节点子树 */
-    private static void collectRows(XMindNode node, List<String> dirPath, List<String[]> rows, String creator) {
+    /** 深度优先遍历：累积目录路径（root + 各级 module 标题），遇到用例即产出若干行；跳过 free 自由节点子树 */
+    private static void collectRows(XMindNode node, List<String> dirPath, List<String[]> rows) {
         if (node == null) return;
         String type = node.getType();
         if ("case".equals(type)) {
-            rows.add(buildRow(node, String.join("-", dirPath), creator));
+            rows.addAll(buildRows(node, String.join(DIR_SEPARATOR, dirPath)));
             return; // 用例的子节点是步骤，不再下钻
         }
         if ("free".equals(type)) return; // 自由节点及其子树不导出（与 XMind 导出一致）
@@ -93,45 +97,40 @@ public final class CaseExcelBuilder {
         nextPath.add(node.getTitle() == null ? "" : node.getTitle());
         if (node.getChildren() != null) {
             for (XMindNode child : node.getChildren()) {
-                collectRows(child, nextPath, rows, creator);
+                collectRows(child, nextPath, rows);
             }
         }
     }
 
+    /**
+     * 一条用例展开为「一步一行」：首行携带名称/分级/类型/前置条件/所属目录，
+     * 后续步骤行仅填 测试步骤 与 预期结果，其余列留空。无步骤时产出单行（步骤/预期为空）。
+     */
     @SuppressWarnings("unchecked")
-    private static String[] buildRow(XMindNode caseNode, String dir, String creator) {
+    private static List<String[]> buildRows(XMindNode caseNode, String dir) {
         Map<String, Object> j = XMindTrees.caseNodeToJson(caseNode);
         String name = str(j.get("用例名称"));
         String level = str(j.get("优先级"));       // P0..P3（如实，不做进一步映射）
-        String pre = str(j.get("前置条件"));        // 已去掉「前置条件:」前缀
+        String pre = numberLines(str(j.get("前置条件"))); // 已去掉「前置条件:」前缀
         List<Map<String, String>> steps = (List<Map<String, String>>) j.get("测试步骤");
 
-        StringBuilder stepSb = new StringBuilder();
-        StringBuilder expSb = new StringBuilder();
-        if (steps != null) {
-            for (int i = 0; i < steps.size(); i++) {
-                Map<String, String> s = steps.get(i);
-                if (i > 0) {
-                    stepSb.append('\n');
-                    expSb.append('\n');
-                }
-                // 兼容处理用户直接把所有操作及结果写到一个节点内
-                String action = s.get("执行操作");
-                String result = s.get("预期结果");
-                if (steps.size() == 1 && result.contains("预期结果")){
-                    stepSb.append(action);
-                    expSb.append(result);
-                }
-                else {
-                    stepSb.append(numbered(action, i + 1));
-                    expSb.append(numbered(result, i + 1));
-                }
+        List<String[]> out = new ArrayList<>();
+        if (steps == null || steps.isEmpty()) {
+            out.add(new String[]{name, level, "功能", pre, "", "", dir});
+            return out;
+        }
+        for (int i = 0; i < steps.size(); i++) {
+            Map<String, String> s = steps.get(i);
+            String action = str(s.get("执行操作"));
+            String result = str(s.get("预期结果"));
+            if (i == 0) {
+                out.add(new String[]{name, level, "功能", pre, action, result, dir});
+            } else {
+                // 续行：仅步骤/预期，其余列留空
+                out.add(new String[]{"", "", "", "", action, result, ""});
             }
         }
-
-        return new String[]{
-                dir, name, "", numberLines(pre), stepSb.toString(), expSb.toString(), "功能", "正常", level, creator
-        };
+        return out;
     }
 
     /** 行首非数字则加「序号. 」前缀；空行不加序号。 */

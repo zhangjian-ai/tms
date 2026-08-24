@@ -279,7 +279,7 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         // 同时导出一份用例 Excel（尽力而为：失败不影响任务完成与 XMind 下载）
         try {
             String excelName = base + ".xlsx";
-            byte[] excelBytes = CaseExcelBuilder.build(root, taskPO.getCreator());
+            byte[] excelBytes = CaseExcelBuilder.build(root);
             minioUtil.uploadFile(excelName, excelBytes,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
             update.setExcelFileName(excelName);

@@ -79,6 +79,15 @@ const routes = [
         }
       },
       {
+        path: 'toolbox/convert',
+        name: 'FileConvert',
+        component: () => import('@/views/toolbox/FileConvert.vue'),
+        meta: {
+          title: '文件转换',
+          requiresAuth: true
+        }
+      },
+      {
         path: 'confdiff/machines',
         name: 'ConfMachineList',
         component: () => import('@/views/confdiff/MachineList.vue'),

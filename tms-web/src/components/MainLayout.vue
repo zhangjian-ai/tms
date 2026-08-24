@@ -31,6 +31,10 @@
             <el-icon><Document /></el-icon>
             <template #title>用例生成</template>
           </el-menu-item>
+          <el-menu-item index="/toolbox/convert">
+            <el-icon><Switch /></el-icon>
+            <template #title>文件转换</template>
+          </el-menu-item>
           <el-menu-item index="/confdiff/compare">
             <el-icon><DocumentCopy /></el-icon>
             <template #title>配置对比</template>
@@ -123,7 +127,8 @@ import {
   Monitor,
   FolderOpened,
   MagicStick,
-  Memo
+  Memo,
+  Switch
 } from '@element-plus/icons-vue'
 
 export default {
@@ -139,7 +144,8 @@ export default {
     Monitor,
     FolderOpened,
     MagicStick,
-    Memo
+    Memo,
+    Switch
   },
   setup() {
     const route = useRoute()
@@ -158,6 +164,7 @@ export default {
         '/devices': '设备管理',
         '/devices/connection': '设备连接信息',
         '/toolbox/testgen': '用例生成',
+        '/toolbox/convert': '文件转换',
         '/confdiff/compare': '配置对比',
         '/confdiff/machines': '机器管理',
         '/confdiff/projects': '项目管理',

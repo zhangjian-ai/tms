@@ -7,7 +7,7 @@ RUN apk add --no-cache tzdata openssl && \
     echo $TZ > /etc/timezone
 
 # 自签证书：构建时生成并打进镜像。换 IP：docker build --build-arg WEB_HOST_IP=172.31.83.x ...
-ARG WEB_HOST_IP=172.31.83.206
+ARG WEB_HOST_IP=172.31.83.223
 RUN mkdir -p /etc/nginx/certs && \
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
       -keyout /etc/nginx/certs/tms.key -out /etc/nginx/certs/tms.crt \
