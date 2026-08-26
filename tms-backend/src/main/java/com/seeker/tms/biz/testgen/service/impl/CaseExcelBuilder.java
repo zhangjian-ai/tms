@@ -68,7 +68,11 @@ public final class CaseExcelBuilder {
                 Row xr = sheet.createRow(r++);
                 for (int i = 0; i < row.length; i++) {
                     Cell c = xr.createCell(i);
-                    c.setCellValue(row[i]);
+                    // 空值保持为「空白单元格」而非空字符串："" 会被导入端当作有值的新用例行，
+                    // 导致续行的 用例分级/用例类型 校验失败；留空白则被识别为上一条用例的续行。
+                    if (row[i] != null && !row[i].isEmpty()) {
+                        c.setCellValue(row[i]);
+                    }
                     c.setCellStyle(bodyStyle);
                 }
             }

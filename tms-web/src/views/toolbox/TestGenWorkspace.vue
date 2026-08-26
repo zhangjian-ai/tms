@@ -14,12 +14,23 @@
           {{ store.task.message }}
         </span>
         <el-button
+          @click="aiDebugVisible = true"
+          :disabled="readonly || !store.treeData || isGenerating || generatingNodeIds.size > 0"
+        >AI</el-button>
+        <el-button
+          @click="exportVisible = true"
+          :disabled="!store.treeData || isGenerating || generatingNodeIds.size > 0"
+        >导出</el-button>
+        <el-button
           type="primary"
           @click="handleFinish"
           :disabled="readonly || !store.treeData || isGenerating || generatingNodeIds.size > 0"
         >完成</el-button>
       </div>
     </div>
+
+    <ExportDialog v-model="exportVisible" :tree-data="store.treeData" :task-id="taskId" />
+    <AiDebugDialog v-model="aiDebugVisible" :tree-data="store.treeData" :task-id="taskId" />
 
     <div class="workspace-content" v-loading="restoring" element-loading-text="正在恢复工作区...">
       <!-- 大纲确认阶段：覆盖整个工作区 -->
@@ -56,11 +67,13 @@ import { useUserStore } from '@/stores/user'
 import { testgenApi } from '@/api/testgen'
 import XMindTreePanel from '@/components/testgen/XMindTreePanel.vue'
 import OutlineConfirmPanel from '@/components/testgen/OutlineConfirmPanel.vue'
+import ExportDialog from '@/components/testgen/ExportDialog.vue'
+import AiDebugDialog from '@/components/testgen/AiDebugDialog.vue'
 import config from '@/config/index.js'
 
 export default {
   name: 'TestGenWorkspace',
-  components: { XMindTreePanel, OutlineConfirmPanel, ArrowLeft },
+  components: { XMindTreePanel, OutlineConfirmPanel, ExportDialog, AiDebugDialog, ArrowLeft },
   setup() {
     const route = useRoute()
     const router = useRouter()
@@ -73,6 +86,8 @@ export default {
     const readonly = ref(false)
     const outline = ref(null)
     const outlineConfirming = ref(false)
+    const exportVisible = ref(false)
+    const aiDebugVisible = ref(false)
     let ws = null
     let reconnectTimer = null
     let heartbeatTimer = null
@@ -555,6 +570,7 @@ export default {
       generatingNodeIds, isGenerating, treePanelRef, readonly,
       outline, outlineConfirming, showOutlinePanel,
       treeDisabled, disabledTip,
+      exportVisible, aiDebugVisible, taskId,
       handleTreeUpdate, handleGenerateForNode,
       handleFinish, handleConfirmOutline, goBack
     }

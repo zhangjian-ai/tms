@@ -42,6 +42,25 @@ export const testgenApi = {
   },
   getDownloadUrl(taskId, type) {
     return api.get(`/testgen/task/${taskId}/download-url`, { params: type ? { type } : {} })
+  },
+  // 临时导出：把选定用例子树发给后端即时渲染，直接拿到文件 blob 下载（不落 MinIO、不改任务状态）
+  exportTemp(taskId, type, treeData) {
+    return api.post(`/testgen/task/${taskId}/export`, treeData, {
+      params: { type },
+      responseType: 'blob'
+    })
+  },
+  // AI 调试 - 提案（同步调 LLM，可能较久，放宽超时）
+  aiDebugPropose(taskId, body) {
+    return api.post(`/testgen/task/${taskId}/ai-debug`, body, { timeout: 600000 })
+  },
+  // AI 调试 - 应用确认的删/改/增
+  aiDebugApply(taskId, body) {
+    return api.post(`/testgen/task/${taskId}/ai-debug/apply`, body)
+  },
+  // AI 调试 - 历史记录（当前用户+任务）
+  getAiDebugHistory(taskId) {
+    return api.get(`/testgen/task/${taskId}/ai-debug/history`)
   }
 }
 

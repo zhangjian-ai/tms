@@ -3,6 +3,9 @@ package com.seeker.tms.biz.testgen.service.impl;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+import com.seeker.tms.biz.testgen.entities.AiDebugApplyDTO;
+import com.seeker.tms.biz.testgen.entities.AiDebugRequestDTO;
+import com.seeker.tms.biz.testgen.entities.AiDebugResultVO;
 import com.seeker.tms.biz.testgen.entities.OutlineVO;
 import com.seeker.tms.biz.testgen.entities.TestGenTaskPO;
 import com.seeker.tms.biz.testgen.entities.XMindNode;
@@ -21,6 +24,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -735,6 +739,260 @@ public class CaseWorkflow {
             added++;
         }
         return added;
+    }
+
+    // ---- AI 调试（用户驱动的二次优化：删 / 改 / 增） ----
+
+    /**
+     * 提案：拼装可引用材料（需求文档/大纲/用例）→ 兜底系统提示词 + 用户系统提示词 → 调 LLM →
+     * 解析为 {deletes, updates, additions} 提案。**不改树**，仅返回给前端预览。
+     */
+    public AiDebugResultVO aiDebugPropose(Integer taskId, AiDebugRequestDTO req) {
+        XMindNode root = store.getTree(taskId);
+        if (root == null) throw new RuntimeException("暂无用例数据");
+
+        // 1) 组装可引用材料
+        TestGenTaskPO task = taskMapper.selectById(taskId);
+        Map<String, String> vars = new HashMap<>();
+        String doc = "";
+        try {
+            doc = docService.truncateDocText(docService.fetchDocText(taskId, task.getPrdName()));
+        } catch (Exception e) {
+            log.warn("AI调试获取需求文档失败 taskId={}: {}", taskId, e.toString());
+        }
+        vars.put("需求文档", doc);
+        vars.put("大纲", buildOutlineMarkdown(store.getOutline(taskId), req.getChapterIds()));
+
+        List<Map<String, Object>> allCases = collectAllCasesFull(root);
+        Set<String> caseFilter = (req.getCaseIds() == null || req.getCaseIds().isEmpty())
+                ? null : new HashSet<>(req.getCaseIds());
+        List<Map<String, Object>> pickedCases = new ArrayList<>();
+        for (Map<String, Object> c : allCases) {
+            if (caseFilter == null || caseFilter.contains(str(c.get("id")))) pickedCases.add(c);
+        }
+        vars.put("用例", casesToMarkdownTable(pickedCases));
+
+        // 2) 用户提示词占位符替换（{{key}}，与 PromptLoader 同款）——用户输入直接作为 LLM 的 user 消息
+        String resolvedUser = substitute(req.getUserPrompt() == null ? "" : req.getUserPrompt(), vars);
+
+        // 3) 系统提示词 = 隐藏兜底
+        String system = testGenPromptService.getSystemPrompt("ai_debug_system");
+
+        // 4) 调 LLM 并解析
+        String resp = llmClient.streamToString(conn(), system, resolvedUser, 900, 0.5);
+        JSONObject parsed = parseRefineResponse(resp);
+        if (parsed == null) throw new RuntimeException("模型返回无法解析为预期 JSON");
+
+        // 5) 组装提案（附展示信息），不改树
+        Map<String, String> nameById = new HashMap<>();
+        for (Map<String, Object> c : allCases) nameById.put(str(c.get("id")), str(c.get("用例名称")));
+
+        AiDebugResultVO vo = new AiDebugResultVO();
+
+        List<Map<String, Object>> deletes = new ArrayList<>();
+        JSONArray dels = parsed.getJSONArray("deletes");
+        if (dels != null) {
+            for (int i = 0; i < dels.size(); i++) {
+                String id = dels.getString(i);
+                if (id == null || id.isBlank() || !nameById.containsKey(id)) continue; // 仅保留存在的用例
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", id);
+                m.put("用例名称", nameById.get(id));
+                deletes.add(m);
+            }
+        }
+        vo.setDeletes(deletes);
+
+        List<Map<String, Object>> updates = new ArrayList<>();
+        JSONArray ups = parsed.getJSONArray("updates");
+        if (ups != null) {
+            for (int i = 0; i < ups.size(); i++) {
+                JSONObject u = ups.getJSONObject(i);
+                if (u == null) continue;
+                String id = u.getString("id");
+                if (id == null || id.isBlank() || !nameById.containsKey(id)) continue;
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", id);
+                m.putAll(caseFieldsMap(u));
+                updates.add(m);
+            }
+        }
+        vo.setUpdates(updates);
+
+        List<Map<String, Object>> additions = new ArrayList<>();
+        JSONArray adds = parsed.getJSONArray("additions");
+        if (adds != null) {
+            for (int i = 0; i < adds.size(); i++) {
+                JSONObject a = adds.getJSONObject(i);
+                if (a == null) continue;
+                String name = a.getString("用例名称");
+                if (name == null || name.isBlank()) continue;
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("tempId", "add_" + i);
+                m.putAll(caseFieldsMap(a));
+                additions.add(m);
+            }
+        }
+        vo.setAdditions(additions);
+        return vo;
+    }
+
+    /**
+     * 应用：删除按 id 直删；修改按 id 原地重建（保留 id 与所在目录）；新增挂到用户选定目录（缺失兜底到「AI调试新增」）。
+     * 保存后推送全量树刷新，返回新树。
+     */
+    public XMindNode aiDebugApply(Integer taskId, AiDebugApplyDTO dto) {
+        String wsKey = String.valueOf(taskId);
+        Object lock = store.getLock(taskId);
+        synchronized (lock) {
+            XMindNode root = store.getTree(taskId);
+            if (root == null) throw new RuntimeException("暂无用例数据");
+
+            // 删除
+            if (dto.getDeletes() != null) {
+                for (String id : dto.getDeletes()) {
+                    if (id != null && !id.isBlank()) XMindTrees.removeNodeById(root, id);
+                }
+            }
+            // 修改：按 id 原地整体重建内容，保留 id 与所在目录
+            if (dto.getUpdates() != null) {
+                for (Map<String, Object> u : dto.getUpdates()) {
+                    if (u == null) continue;
+                    String id = str(u.get("id"));
+                    if (id.isBlank()) continue;
+                    XMindNode node = XMindTrees.findNodeById(root, id);
+                    if (node == null || !"case".equals(node.getType())) continue;
+                    XMindNode rebuilt = XMindTrees.buildSingleCaseNode(toJsonObject(u));
+                    if (rebuilt == null) continue;
+                    node.setTitle(rebuilt.getTitle());
+                    node.setIcons(rebuilt.getIcons());
+                    node.setChildren(rebuilt.getChildren());
+                }
+            }
+            // 就地新建目录：先建目录节点，记录 tempId → 真实 id 映射，供 additions 挂载引用
+            Map<String, String> newDirIdMap = new HashMap<>();
+            if (dto.getNewDirs() != null && !dto.getNewDirs().isEmpty()) {
+                List<AiDebugApplyDTO.NewDir> pending = new ArrayList<>(dto.getNewDirs());
+                boolean progress = true;
+                // 父目录可能是「已存在节点 id」或「另一条 newDir 的 tempId」；反复扫描直至无法再推进
+                while (!pending.isEmpty() && progress) {
+                    progress = false;
+                    Iterator<AiDebugApplyDTO.NewDir> it = pending.iterator();
+                    while (it.hasNext()) {
+                        AiDebugApplyDTO.NewDir nd = it.next();
+                        if (nd == null) { it.remove(); continue; }
+                        XMindNode parent = resolveNewDirParent(root, nd.getParentId(), newDirIdMap);
+                        if (parent == null) continue;   // 父目录（可能是后续 tempId）尚未就绪，下一轮再试
+                        String name = (nd.getName() == null || nd.getName().isBlank()) ? "新建目录" : nd.getName().trim();
+                        XMindNode m = XMindTrees.newNode("module_" + java.util.UUID.randomUUID(), name, "module");
+                        if (parent.getChildren() == null) parent.setChildren(new ArrayList<>());
+                        parent.getChildren().add(m);
+                        if (nd.getTempId() != null) newDirIdMap.put(nd.getTempId(), m.getId());
+                        it.remove();
+                        progress = true;
+                    }
+                }
+                // 仍有父目录无法解析的：兜底挂到 root 下，保证用户新建的目录不丢
+                for (AiDebugApplyDTO.NewDir nd : pending) {
+                    if (nd == null) continue;
+                    String name = (nd.getName() == null || nd.getName().isBlank()) ? "新建目录" : nd.getName().trim();
+                    XMindNode m = XMindTrees.newNode("module_" + java.util.UUID.randomUUID(), name, "module");
+                    if (root.getChildren() == null) root.setChildren(new ArrayList<>());
+                    root.getChildren().add(m);
+                    if (nd.getTempId() != null) newDirIdMap.put(nd.getTempId(), m.getId());
+                }
+            }
+
+            // 新增：挂到用户选定目录节点；目标缺失/非目录时兜底到 root 下「AI调试新增」
+            if (dto.getAdditions() != null) {
+                for (AiDebugApplyDTO.Addition add : dto.getAdditions()) {
+                    if (add == null || add.getCaseData() == null) continue;
+                    XMindNode caseNode = XMindTrees.buildSingleCaseNode(toJsonObject(add.getCaseData()));
+                    if (caseNode == null) continue;
+                    // targetNodeId 可能引用新建目录的 tempId，先映射为真实 id
+                    String targetId = add.getTargetNodeId();
+                    if (targetId != null && newDirIdMap.containsKey(targetId)) targetId = newDirIdMap.get(targetId);
+                    XMindNode target = (targetId != null) ? XMindTrees.findNodeById(root, targetId) : null;
+                    if (target == null || "case".equals(target.getType()) || "step".equals(target.getType())) {
+                        target = findOrCreateAiAddModule(root);
+                    }
+                    if (target.getChildren() == null) target.setChildren(new ArrayList<>());
+                    target.getChildren().add(caseNode);
+                }
+            }
+
+            store.saveTree(taskId, root);
+            TestGenWebSocketHandler.sendTreeUpdated(wsKey, root);
+            return root;
+        }
+    }
+
+    /** 大纲拼 markdown：按勾选章节过滤（为空则全部），每条「- **名称**：范围」 */
+    private String buildOutlineMarkdown(OutlineVO outline, List<String> chapterIds) {
+        if (outline == null || outline.getChapters() == null) return "";
+        Set<String> filter = (chapterIds == null || chapterIds.isEmpty()) ? null : new HashSet<>(chapterIds);
+        StringBuilder sb = new StringBuilder();
+        for (OutlineVO.Chapter c : outline.getChapters()) {
+            if (c == null || c.getName() == null) continue;
+            if (filter != null && !filter.contains(c.getId())) continue;
+            sb.append("- **").append(c.getName().trim()).append("**：")
+              .append(c.getScope() == null ? "" : c.getScope().trim()).append("\n");
+        }
+        return sb.toString();
+    }
+
+    /** 从 JSON 提取用例四要素（用例名称/优先级/前置条件/测试步骤），规整测试步骤为 [{执行操作,预期结果}] */
+    private Map<String, Object> caseFieldsMap(JSONObject c) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("用例名称", c.getString("用例名称"));
+        m.put("优先级", c.getString("优先级") == null ? "" : c.getString("优先级"));
+        m.put("前置条件", c.getString("前置条件") == null ? "" : c.getString("前置条件"));
+        List<Map<String, String>> steps = new ArrayList<>();
+        JSONArray arr = c.getJSONArray("测试步骤");
+        if (arr != null) {
+            for (int i = 0; i < arr.size(); i++) {
+                JSONObject s = arr.getJSONObject(i);
+                if (s == null) continue;
+                Map<String, String> sm = new LinkedHashMap<>();
+                sm.put("执行操作", s.getString("执行操作") == null ? "" : s.getString("执行操作"));
+                sm.put("预期结果", s.getString("预期结果") == null ? "" : s.getString("预期结果"));
+                steps.add(sm);
+            }
+        }
+        m.put("测试步骤", steps);
+        return m;
+    }
+
+    /** Map → 干净的 fastjson JSONObject（经序列化往返，嵌套转 JSONArray/JSONObject），供 buildSingleCaseNode 使用 */
+    private JSONObject toJsonObject(Map<String, Object> map) {
+        return JSON.parseObject(JSON.toJSONString(map));
+    }
+
+    /** 占位符替换：{{key}} → value（与 PromptLoader.loadWithParams 同款语义） */
+    private String substitute(String template, Map<String, String> vars) {
+        String result = template;
+        for (Map.Entry<String, String> e : vars.entrySet()) {
+            result = result.replace("{{" + e.getKey() + "}}", e.getValue() == null ? "" : e.getValue());
+        }
+        return result;
+    }
+
+    /** 解析新建目录的父节点：父为空→root；父是另一条 newDir 的 tempId→取其已建真实 id；否则按已存在节点 id 查找。未就绪返回 null */
+    private XMindNode resolveNewDirParent(XMindNode root, String parentId, Map<String, String> newDirIdMap) {
+        if (parentId == null || parentId.isBlank()) return root;
+        if (newDirIdMap.containsKey(parentId)) return XMindTrees.findNodeById(root, newDirIdMap.get(parentId));
+        return XMindTrees.findNodeById(root, parentId);
+    }
+
+    /** 找/建 root 下的「AI调试新增」目录，作为未指定目标目录时的兜底挂载点 */
+    private XMindNode findOrCreateAiAddModule(XMindNode root) {
+        if (root.getChildren() == null) root.setChildren(new ArrayList<>());
+        for (XMindNode c : root.getChildren()) {
+            if ("module".equals(c.getType()) && "AI调试新增".equals(c.getTitle())) return c;
+        }
+        XMindNode m = XMindTrees.newNode("module_" + java.util.UUID.randomUUID(), "AI调试新增", "module");
+        root.getChildren().add(m);
+        return m;
     }
 
     // ---- 内部工具 ----

@@ -2,6 +2,9 @@ package com.seeker.tms.biz.testgen.controller;
 
 import com.seeker.tms.biz.testgen.entities.*;
 import com.seeker.tms.biz.testgen.service.TestGenService;
+import com.seeker.tms.biz.testgen.service.impl.CaseExcelBuilder;
+import com.seeker.tms.biz.testgen.service.impl.XMindBuilder;
+import com.seeker.tms.biz.testgen.utils.XMindTrees;
 import com.seeker.tms.biz.testgen.websocket.TestGenWebSocketHandler;
 import com.seeker.tms.common.auth.UserContext;
 import com.seeker.tms.common.entities.PageResult;
@@ -12,9 +15,14 @@ import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 @Slf4j
@@ -139,5 +147,68 @@ public class TestGenController {
         }
         String url = minioUtil.getUrl(fileName);
         return Result.success(url);
+    }
+
+    @ApiOperation("临时导出选定用例子树（直接下载，不落 MinIO、不改任务状态）")
+    @PostMapping("/task/{taskId}/export")
+    public ResponseEntity<byte[]> exportTemp(@PathVariable Integer taskId,
+                                             @RequestParam(required = false, defaultValue = "xmind") String type,
+                                             @RequestBody XMindNode root) {
+        if (root == null) {
+            return ResponseEntity.badRequest().build();
+        }
+        byte[] bytes;
+        String ext;
+        String contentType;
+        if ("excel".equalsIgnoreCase(type)) {
+            // Excel：collectRows 内部已跳过 free 节点，直接用原始 root（与 finishTask 一致）
+            bytes = CaseExcelBuilder.build(root);
+            ext = ".xlsx";
+            contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        } else {
+            // XMind：先剔除 free 自由节点，再渲染（与 finishTask 一致）
+            bytes = XMindBuilder.build(XMindTrees.filterForExport(root));
+            ext = ".xmind";
+            contentType = "application/octet-stream";
+        }
+        String base = (root.getTitle() != null && !root.getTitle().isBlank())
+                ? root.getTitle() : ("export_" + taskId);
+        String encoded = URLEncoder.encode(base + ext, StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded)
+                .contentType(MediaType.parseMediaType(contentType))
+                .body(bytes);
+    }
+
+    // ---- AI 调试（用户驱动的二次优化：删 / 改 / 增） ----
+
+    @ApiOperation("AI 调试 - 提案（调 LLM 产出删/改/增，不改树）")
+    @PostMapping("/task/{taskId}/ai-debug")
+    public Result<AiDebugResultVO> aiDebugPropose(@PathVariable Integer taskId,
+                                                  @RequestBody AiDebugRequestDTO req) {
+        String username = UserContext.get();
+        if (!TestGenWebSocketHandler.canEdit(String.valueOf(taskId), username)) {
+            return Result.builder(ResultStatus.FAILED.getCode(),
+                    "任务正被他人编辑，您当前为只读模式，无法进行 AI 调试", null);
+        }
+        return Result.success(testGenService.aiDebugPropose(taskId, req));
+    }
+
+    @ApiOperation("AI 调试 - 应用（把确认的删/改/增写入用例树并刷新）")
+    @PostMapping("/task/{taskId}/ai-debug/apply")
+    public Result<XMindNode> aiDebugApply(@PathVariable Integer taskId,
+                                          @RequestBody AiDebugApplyDTO dto) {
+        String username = UserContext.get();
+        if (!TestGenWebSocketHandler.canEdit(String.valueOf(taskId), username)) {
+            return Result.builder(ResultStatus.FAILED.getCode(),
+                    "任务正被他人编辑，您当前为只读模式，应用被拒绝", null);
+        }
+        return Result.success(testGenService.aiDebugApply(taskId, dto));
+    }
+
+    @ApiOperation("AI 调试 - 历史记录（当前用户+任务，最多 30 条）")
+    @GetMapping("/task/{taskId}/ai-debug/history")
+    public Result<java.util.List<AiDebugHistoryVO>> aiDebugHistory(@PathVariable Integer taskId) {
+        return Result.success(testGenService.getAiDebugHistory(taskId));
     }
 }

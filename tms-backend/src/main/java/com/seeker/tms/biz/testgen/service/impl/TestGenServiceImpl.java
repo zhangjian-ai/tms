@@ -1,6 +1,7 @@
 package com.seeker.tms.biz.testgen.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.core.metadata.OrderItem;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -22,6 +23,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -429,5 +431,44 @@ public class TestGenServiceImpl extends ServiceImpl<TestGenTaskMapper, TestGenTa
         String msg = e.getMessage();
         if (msg != null && !msg.isBlank()) return msg;
         return e.getClass().getSimpleName();
+    }
+
+    // ---- AI 调试 ----
+
+    private static final DateTimeFormatter AIDEBUG_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    @Override
+    public AiDebugResultVO aiDebugPropose(Integer taskId, AiDebugRequestDTO req) {
+        AiDebugResultVO result = caseWorkflow.aiDebugPropose(taskId, req);
+        // 记录一条历史（仅存用户填写的系统/用户提示词）——尽力而为，失败不影响调试
+        try {
+            AiDebugHistoryVO h = new AiDebugHistoryVO();
+            h.setSystemPrompt(req.getSystemPrompt());
+            h.setUserPrompt(req.getUserPrompt());
+            h.setTime(LocalDateTime.now().format(AIDEBUG_TIME_FMT));
+            store.pushAiDebugHistory(taskId, UserContext.get(), JSON.toJSONString(h));
+        } catch (Exception e) {
+            log.warn("保存 AI 调试历史失败 taskId={}: {}", taskId, e.toString());
+        }
+        return result;
+    }
+
+    @Override
+    public XMindNode aiDebugApply(Integer taskId, AiDebugApplyDTO dto) {
+        return caseWorkflow.aiDebugApply(taskId, dto);
+    }
+
+    @Override
+    public List<AiDebugHistoryVO> getAiDebugHistory(Integer taskId) {
+        List<String> raw = store.getAiDebugHistory(taskId, UserContext.get());
+        List<AiDebugHistoryVO> list = new ArrayList<>(raw.size());
+        for (String json : raw) {
+            try {
+                list.add(JSON.parseObject(json, AiDebugHistoryVO.class));
+            } catch (Exception ignore) {
+                // 跳过损坏记录
+            }
+        }
+        return list;
     }
 }
